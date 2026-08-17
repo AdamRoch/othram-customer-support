@@ -1,0 +1,20 @@
+:root {
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  color: #182322;
+  background: #f5f5f0;
+}
+
+body { margin: 0; }
+
+main {
+  max-width: 44rem;
+  margin: 12vh auto;
+  padding: 2rem;
+}
+
+.eyebrow { color: #567169; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; }
+h1 { font-size: clamp(2rem, 7vw, 4rem); margin: 0 0 2rem; }
+section { background: white; border-radius: 1rem; padding: 1.5rem; box-shadow: 0 1rem 3rem #1a2d2920; }
+h2 { margin-top: 0; }
+.success { color: #136c4b; font-weight: 700; }
+.error { color: #ab2929; font-weight: 700; }
