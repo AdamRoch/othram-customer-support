@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "concurrently -n server,web -c cyan,magenta \"pnpm --filter @othram/server dev\" \"pnpm --filter @othram/web dev\"",
     "build": "pnpm --filter @othram/shared build && pnpm --filter @othram/server build && pnpm --filter @othram/web build",
+    "db:migrate": "pnpm --filter @othram/server db:migrate",
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
     "test": "pnpm --filter @othram/server test"

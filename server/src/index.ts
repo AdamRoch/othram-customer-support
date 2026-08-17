@@ -1,10 +1,20 @@
+import 'dotenv/config';
 import { buildApp } from './app.js';
+import { createDatabase } from './db/client.js';
 
-const app = await buildApp();
+const database = createDatabase();
 
 try {
+  await database.checkConnection();
+  const app = await buildApp();
+
+  app.addHook('onClose', async () => {
+    await database.close();
+  });
+
   await app.listen({ port: 3001, host: '127.0.0.1' });
 } catch (error) {
-  app.log.error(error);
+  console.error('Database connection failed. Start Postgres with `docker compose up -d` and check DATABASE_URL.', error);
+  await database.close();
   process.exit(1);
 }

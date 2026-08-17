@@ -1,0 +1,19 @@
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: othram
+      POSTGRES_USER: othram
+      POSTGRES_PASSWORD: othram
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U othram -d othram"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - othram-postgres-data:/var/lib/postgresql/data
+
+volumes:
+  othram-postgres-data:
