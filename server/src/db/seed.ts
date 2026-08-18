@@ -1,5 +1,5 @@
 import 'dotenv/config';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import { createDatabase } from './client.js';
 import { cases, customers, stageDurations } from './schema.js';
 import { createSeedData, stageDurationSeedData } from './seed-data.js';
@@ -13,7 +13,10 @@ try {
     await tx
       .insert(stageDurations)
       .values([...stageDurationSeedData])
-      .onConflictDoUpdate({ target: stageDurations.stage, set: { standardDays: stageDurations.standardDays } });
+      .onConflictDoUpdate({
+        target: stageDurations.stage,
+        set: { standardDays: sql`excluded.standard_days` }
+      });
 
     const customerIds = new Map<string, string>();
     for (const customer of seedData.customers) {

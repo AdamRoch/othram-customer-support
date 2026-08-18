@@ -1,13 +1,13 @@
 import type { Stage } from '@othram/shared';
 
 export const stageDurationSeedData: ReadonlyArray<{ stage: Stage; standardDays: number }> = [
-  { stage: 'RECEIVED', standardDays: 2 },
-  { stage: 'EXTRACTION', standardDays: 10 },
-  { stage: 'QUANTIFICATION', standardDays: 5 },
-  { stage: 'LIBRARY_PREP', standardDays: 7 },
-  { stage: 'SEQUENCING', standardDays: 14 },
-  { stage: 'BIOINFORMATICS', standardDays: 10 },
-  { stage: 'REVIEW', standardDays: 7 },
+  { stage: 'RECEIVED', standardDays: 1 },
+  { stage: 'EXTRACTION', standardDays: 5 },
+  { stage: 'QUANTIFICATION', standardDays: 2 },
+  { stage: 'LIBRARY_PREP', standardDays: 6 },
+  { stage: 'SEQUENCING', standardDays: 3 },
+  { stage: 'BIOINFORMATICS', standardDays: 2 },
+  { stage: 'REVIEW', standardDays: 2 },
   { stage: 'DELIVERED', standardDays: 0 }
 ];
 
@@ -30,6 +30,10 @@ export interface SeedCase {
 
 function daysBefore(reference: Date, days: number): Date {
   return new Date(reference.getTime() - days * 24 * 60 * 60 * 1000);
+}
+
+function daysAfter(reference: Date, days: number): Date {
+  return new Date(reference.getTime() + days * 24 * 60 * 60 * 1000);
 }
 
 function lastThursday(reference: Date): Date {
@@ -61,7 +65,7 @@ export function createSeedData(reference = new Date()): {
   ] as const;
 
   const cases = [
-    { caseNumber: 'OTH-2026-0142', customerEmail: 'jordan.lee@othram-demo.test', serviceType: 'Forensic DNA identification', currentStage: 'RECEIVED', stageEnteredAt: submittedLastThursday, submittedAt: submittedLastThursday, delayed: false, notes: 'Submitted last Thursday; intake documentation is complete.' },
+    { caseNumber: 'OTH-2026-0142', customerEmail: 'jordan.lee@othram-demo.test', serviceType: 'Forensic DNA identification', currentStage: 'EXTRACTION', stageEnteredAt: daysAfter(submittedLastThursday, 1), submittedAt: submittedLastThursday, delayed: false, notes: 'Submitted last Thursday; intake documentation is complete.' },
     { caseNumber: 'OTH-2026-0143', customerEmail: 'maya.collins@othram-demo.test', serviceType: 'Kinship testing', currentStage: 'EXTRACTION', stageEnteredAt: daysBefore(reference, 3), submittedAt: daysBefore(reference, 5), delayed: false, notes: null },
     { caseNumber: 'OTH-2026-0144', customerEmail: 'maya.collins@othram-demo.test', serviceType: 'Forensic DNA identification', currentStage: 'QUANTIFICATION', stageEnteredAt: daysBefore(reference, 2), submittedAt: daysBefore(reference, 16), delayed: false, notes: 'First of two active cases for this customer.' },
     { caseNumber: 'OTH-2026-0145', customerEmail: 'aaron.bell@othram-demo.test', serviceType: 'Forensic DNA identification', currentStage: 'LIBRARY_PREP', stageEnteredAt: daysBefore(reference, 4), submittedAt: daysBefore(reference, 27), delayed: false, notes: null },

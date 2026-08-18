@@ -34,3 +34,49 @@ export interface Case {
   delayed: boolean;
   notes: string | null;
 }
+
+export type TimelineStatus = 'ON_SCHEDULE' | 'PAST_STANDARD_DURATION' | 'DELAYED' | 'DELIVERED';
+
+export interface TimelineMilestone {
+  at: string;
+  daysFromNow: number;
+  weeksFromNow: number;
+}
+
+export type TimelineEta =
+  | {
+      status: 'AVAILABLE';
+      sequencing: TimelineMilestone | null;
+      delivery: TimelineMilestone;
+      standardTotalDays: number;
+      standardTotalWeeks: number;
+    }
+  | {
+      status: 'UNAVAILABLE';
+      reason: 'CASE_DELAYED';
+      standardTotalDays: number;
+      standardTotalWeeks: number;
+    }
+  | {
+      status: 'COMPLETE';
+      deliveredAt: string;
+      standardTotalDays: number;
+      standardTotalWeeks: number;
+    };
+
+export interface CaseTimelineResponse {
+  caseNumber: string;
+  currentStage: Stage;
+  stageEnteredAt: string;
+  timeInStageDays: number;
+  standardStageDurationDays: number;
+  pastStandardDuration: boolean;
+  delayed: boolean;
+  timelineStatus: TimelineStatus;
+  eta: TimelineEta;
+}
+
+export interface CaseTimelineNotFoundResponse {
+  error: 'CASE_NOT_FOUND';
+  caseNumber: string;
+}
