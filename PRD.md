@@ -103,6 +103,10 @@ pnpm workspaces.
 
 ### 5.2 Ticket channel adapter (`server/src/channels/ticket/`)
 
+- **Authentication:** the server exchanges the confidential OAuth client's ID
+  and secret through Zendesk's OAuth 2.0 client credentials flow. Short-lived
+  access tokens stay in process memory only, are never exposed to the browser or
+  logs, and are replaced by a new client credentials exchange before expiry.
 - **Ingestion:** polls Zendesk's incremental ticket API every ~30s with a cursor
   (default; meets the 5-minute response target); also exposes a webhook receiver
   endpoint for real-time push when a public URL is configured. Both paths funnel
@@ -237,7 +241,8 @@ auditable event feeding the human-avoidance metric.
 Run: `docker compose up -d` → `pnpm seed` → `pnpm zendesk:setup` → `pnpm dev`.
 Evaluate: `pnpm eval`.
 
-Environment: `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`, Zendesk subdomain/email/API token.
+Environment: `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`, `ZENDESK_SUBDOMAIN`,
+`ZENDESK_CLIENT_ID`, and `ZENDESK_CLIENT_SECRET`.
 
 ## 9. Acceptance — eval scenario suite
 
