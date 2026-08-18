@@ -1,12 +1,15 @@
 import 'dotenv/config';
 import { buildApp } from './app.js';
+import { createCaseTimelineRepository } from './cases/repository.js';
 import { createDatabase } from './db/client.js';
 
 const database = createDatabase();
 
 try {
   await database.checkConnection();
-  const app = await buildApp();
+  const app = await buildApp({
+    timelineRepository: createCaseTimelineRepository(database.db)
+  });
 
   app.addHook('onClose', async () => {
     await database.close();

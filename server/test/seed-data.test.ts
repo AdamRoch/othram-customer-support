@@ -21,6 +21,7 @@ describe('case seed data', () => {
     expect(new Set(seedData.cases.map((seedCase) => seedCase.currentStage))).toEqual(new Set(expectedStages));
     expect(stageDurationSeedData.map(({ stage }) => stage)).toEqual(expectedStages);
     expect(stageDurationSeedData.every(({ standardDays }) => Number.isInteger(standardDays) && standardDays >= 0)).toBe(true);
+    expect(stageDurationSeedData.reduce((total, { standardDays }) => total + standardDays, 0)).toBe(21);
   });
 
   it('includes the required support scenarios', () => {
