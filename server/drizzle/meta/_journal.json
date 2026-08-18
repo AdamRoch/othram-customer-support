@@ -15,6 +15,13 @@
       "when": 1786943551193,
       "tag": "0001_kind_white_queen",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1787048508135,
+      "tag": "0002_clammy_mercury",
+      "breakpoints": true
     }
   ]
 }
