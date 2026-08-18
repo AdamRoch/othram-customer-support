@@ -1,8 +1,11 @@
 # Demo seed data
 
-Run `pnpm db:migrate` and then `pnpm seed` to populate the local Case System.
-The command is safe to re-run: it updates the fixed demo Customers, Cases, and
-stage durations instead of creating duplicates.
+Set `OPENAI_API_KEY`, run `pnpm db:migrate`, and then run `pnpm seed` to
+populate the local Case System and embed the bundled knowledge documents with
+`text-embedding-3-small`. The command is safe to re-run: it updates the fixed
+demo Customers, Cases, stage durations, and KB chunks instead of creating
+duplicates. If the API key is missing or OpenAI returns an invalid embedding
+response, the command exits before writing any seed changes.
 
 ## Zendesk requester emails
 
