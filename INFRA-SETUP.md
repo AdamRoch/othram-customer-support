@@ -35,15 +35,45 @@ Referenced by the vendor smoke-test spike ticket and the channel tickets.
 
 - [ ] Sign up for a Zendesk Suite trial → note your subdomain
       (`<subdomain>.zendesk.com`) → save as `ZENDESK_SUBDOMAIN`.
-- [ ] Admin Center → Apps and integrations → APIs → Zendesk API → enable token
-      auth, add a token → save as `ZENDESK_API_TOKEN`. Save the login email as
-      `ZENDESK_EMAIL`.
+- [ ] Admin Center → Apps and integrations → APIs → OAuth clients → add a
+      **Confidential** OAuth client. Redirect URLs are not needed for the client
+      credentials flow. Save its Identifier as `ZENDESK_CLIENT_ID` and copy its
+      one-time Secret as `ZENDESK_CLIENT_SECRET`.
 - [ ] Note the support address (`support@<subdomain>.zendesk.com`) — this is
       where demo emails are sent to create tickets.
 - [ ] Do **not** create groups, tags, or macros manually — the
       `pnpm zendesk:setup` ticket provisions them via API.
-- [ ] Verify: `curl -u "$ZENDESK_EMAIL/token:$ZENDESK_API_TOKEN"
-      https://$ZENDESK_SUBDOMAIN.zendesk.com/api/v2/users/me.json` returns your user.
+- [ ] Verify the credentials with the read-only check below. It exchanges the
+      client credentials on the server-to-server token endpoint for a 10-minute,
+      read-only access token, keeps that token in shell memory, prints only a
+      small user summary, and then clears the variables. Keep shell tracing off:
+
+```sh
+(
+  set +x
+  set -eu
+  TOKEN_RESPONSE="$(
+    curl --silent --show-error --fail \
+      "https://$ZENDESK_SUBDOMAIN.zendesk.com/oauth/tokens" \
+      -H "Content-Type: application/x-www-form-urlencoded" \
+      --data-urlencode "grant_type=client_credentials" \
+      --data-urlencode "client_id=$ZENDESK_CLIENT_ID" \
+      --data-urlencode "client_secret=$ZENDESK_CLIENT_SECRET" \
+      --data-urlencode "scope=read" \
+      --data-urlencode "expires_in=600"
+  )"
+  ACCESS_TOKEN="$(printf '%s' "$TOKEN_RESPONSE" | jq -er '.access_token')"
+  unset TOKEN_RESPONSE
+  curl --silent --show-error --fail \
+    "https://$ZENDESK_SUBDOMAIN.zendesk.com/api/v2/users/me.json" \
+    -H "Authorization: Bearer $ACCESS_TOKEN" |
+    jq '{user: {id: .user.id, name: .user.name, role: .user.role}}'
+  unset ACCESS_TOKEN
+)
+```
+
+Do not add `--verbose`, echo either credential, print the token response, or save
+the access token to disk.
 - [ ] **Timing note:** trials expire (~14 days). If it lapses mid-build, create
       a fresh trial, update the env values, and re-run `pnpm zendesk:setup` —
       scripted provisioning exists precisely so this is a 2-minute recovery.
@@ -52,6 +82,8 @@ Referenced by the vendor smoke-test spike ticket and the channel tickets.
 
 - [ ] Node.js 20+ (`node --version`)
 - [ ] pnpm (`pnpm --version`; `npm install -g pnpm` if missing)
+- [ ] jq (`jq --version`) — safely extracts the temporary Zendesk access token
+      during credential verification
 - [ ] Docker Desktop, running (`docker info` succeeds) — runs Postgres+pgvector
 - [ ] git (`git --version`)
 
@@ -64,8 +96,8 @@ OPENAI_API_KEY=
 ELEVENLABS_API_KEY=
 ELEVENLABS_VOICE_ID=
 ZENDESK_SUBDOMAIN=
-ZENDESK_EMAIL=
-ZENDESK_API_TOKEN=
+ZENDESK_CLIENT_ID=
+ZENDESK_CLIENT_SECRET=
 ```
 
 Agents wire these into the real `.env` (the scaffold ticket creates
