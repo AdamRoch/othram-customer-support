@@ -14,7 +14,7 @@ export interface EmbeddingClient {
   embeddings: {
     create(request: {
       model: string;
-      input: string[];
+      input: string | string[];
       dimensions: number;
       encoding_format: 'float';
     }): Promise<EmbeddingResponse>;
@@ -113,4 +113,20 @@ export async function embedKnowledgeChunks(
   }
 
   return embeddedChunks;
+}
+
+export async function embedKnowledgeQuery(query: string, client: EmbeddingClient): Promise<number[]> {
+  const input = query.trim();
+  if (!input) {
+    throw new Error('Knowledge search query must not be empty.');
+  }
+
+  const response = await client.embeddings.create({
+    model: KNOWLEDGE_EMBEDDING_MODEL,
+    input,
+    dimensions: KNOWLEDGE_EMBEDDING_DIMENSIONS,
+    encoding_format: 'float'
+  });
+
+  return validateBatchResponse(response, 1)[0];
 }
