@@ -221,7 +221,6 @@ async function zendeskAccessToken(): Promise<string> {
     grant_type: 'client_credentials',
     client_id: requiredEnv('ZENDESK_CLIENT_ID'),
     client_secret: requiredEnv('ZENDESK_CLIENT_SECRET'),
-    scope: 'read write',
     expires_in: 600,
   });
   const response = await fetch(`https://${subdomain}.zendesk.com/oauth/tokens`, {

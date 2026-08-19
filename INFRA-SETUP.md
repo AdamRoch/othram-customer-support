@@ -36,7 +36,9 @@ Referenced by the vendor smoke-test spike ticket and the channel tickets.
 - [ ] Sign up for a Zendesk Suite trial → note your subdomain
       (`<subdomain>.zendesk.com`) → save as `ZENDESK_SUBDOMAIN`.
 - [ ] Admin Center → Apps and integrations → APIs → OAuth clients → add a
-      **Confidential** OAuth client. Redirect URLs are not needed for the client
+      **Confidential** OAuth client while signed in as an active Zendesk Support
+      administrator. In its **Scopes** field, allow the required `read` and
+      `write` Ticketing API scopes. Redirect URLs are not needed for the client
       credentials flow. Save its Identifier as `ZENDESK_CLIENT_ID` and copy its
       one-time Secret as `ZENDESK_CLIENT_SECRET`.
 - [ ] Note the support address (`support@<subdomain>.zendesk.com`) — this is
@@ -55,12 +57,11 @@ Referenced by the vendor smoke-test spike ticket and the channel tickets.
   TOKEN_RESPONSE="$(
     curl --silent --show-error --fail \
       "https://$ZENDESK_SUBDOMAIN.zendesk.com/oauth/tokens" \
-      -H "Content-Type: application/x-www-form-urlencoded" \
-      --data-urlencode "grant_type=client_credentials" \
-      --data-urlencode "client_id=$ZENDESK_CLIENT_ID" \
-      --data-urlencode "client_secret=$ZENDESK_CLIENT_SECRET" \
-      --data-urlencode "scope=read" \
-      --data-urlencode "expires_in=600"
+      -H "Content-Type: application/json" \
+      --data "$(jq -nc \
+        --arg client_id "$ZENDESK_CLIENT_ID" \
+        --arg client_secret "$ZENDESK_CLIENT_SECRET" \
+        '{grant_type: "client_credentials", client_id: $client_id, client_secret: $client_secret, expires_in: 600}')"
   )"
   ACCESS_TOKEN="$(printf '%s' "$TOKEN_RESPONSE" | jq -er '.access_token')"
   unset TOKEN_RESPONSE
@@ -72,8 +73,10 @@ Referenced by the vendor smoke-test spike ticket and the channel tickets.
 )
 ```
 
-Do not add `--verbose`, echo either credential, print the token response, or save
-the access token to disk.
+Zendesk derives a client-credentials token's permissions from the OAuth client
+owner. Do not send an explicit `scope` unless the trial has confirmed that scope
+is accepted. Do not add `--verbose`, echo either credential, print the token
+response, or save the access token to disk.
 - [ ] **Timing note:** trials expire (~14 days). If it lapses mid-build, create
       a fresh trial, update the env values, and re-run `pnpm zendesk:setup` —
       scripted provisioning exists precisely so this is a 2-minute recovery.
