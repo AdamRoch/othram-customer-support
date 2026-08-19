@@ -1,0 +1,38 @@
+# Vendor smoke test (throwaway)
+
+`server/scripts/vendor-smoke.ts` is a one-off feasibility spike for OTHRM-10.
+It is not channel-adapter or production code. It makes four live vendor calls,
+prints only sanitized results, and removes its generated test audio when it
+exits.
+
+Run it only after loading the private runtime environment into the current
+shell. Do not copy that file into this repository or enable shell tracing.
+
+```sh
+set -a
+source /Users/adam/firstmate/projects/othram-customer-support/.env
+set +a
+SMOKE_PLAY_AUDIO=1 pnpm smoke:vendors
+```
+
+`SMOKE_PLAY_AUDIO=1` is intentional: the check renders the same sentence with
+`[calm]` and `[chuckles]`, plays each temporary clip locally, and fails if
+either render is missing or both renders are byte-identical. The spike keeps no
+audio response or ticket identifier. It creates one plainly labelled,
+disposable ticket in the developer-owned Zendesk trial.
+
+## Sanitized result — 2026-08-19
+
+The live run loaded the approved private environment only into the command
+process and retained no credentials, bearer tokens, provider payloads,
+generated audio, or Zendesk ticket data.
+
+| Check | Result | Sanitized note |
+| --- | --- | --- |
+| OpenAI tool calling | PASS | The model returned a toy function call and completed a second turn after its tool result. |
+| ElevenLabs Scribe realtime | PASS | A Node WebSocket streamed generated PCM and received a nonempty committed transcript. |
+| ElevenLabs v3 TTS audio tags | FAIL | The configured voice was rejected before v3 could render or play the `[calm]` and `[chuckles]` comparison. Follow-up: OTHRM-30. |
+| Zendesk authenticated ticket create/read | FAIL | The trial rejected the client-credentials grant, so no test ticket was created. Follow-up: OTHRM-29. |
+
+OTHRM-10 remains blocked until the two provider setup issues are resolved and
+the command produces four passes.
