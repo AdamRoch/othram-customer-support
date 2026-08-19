@@ -80,3 +80,26 @@ export interface CaseTimelineNotFoundResponse {
   error: 'CASE_NOT_FOUND';
   caseNumber: string;
 }
+
+export interface KnowledgeSearchCitation {
+  document: string;
+  section: string;
+  category: string;
+  sourcePath: string;
+}
+
+export interface KnowledgeSearchResult {
+  content: string;
+  citation: KnowledgeSearchCitation;
+  similarity: number;
+}
+
+export interface KnowledgeSearchResponse {
+  query: string;
+  results: KnowledgeSearchResult[];
+}
+
+export interface KnowledgeSearchBadRequestResponse {
+  error: 'INVALID_KNOWLEDGE_SEARCH_QUERY';
+  message: string;
+}
