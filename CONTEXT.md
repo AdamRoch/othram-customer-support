@@ -17,15 +17,34 @@ The system of record for a Case's status and processing stage. In this build it 
 _Avoid_: LIMS, database, backend
 
 **Ticket**:
-A Zendesk support ticket — the written channel through which Customers contact support. The agent reads, replies to, tags, and resolves Tickets via the Zendesk API.
+A written support conversation through which Customers contact support. A
+Ticket has a requester, a thread, tags, team assignment, and a status. In the
+provider-limited local delivery, Tickets are stored in the Local Ticket System;
+a future Zendesk adapter may operate on Zendesk Tickets through the same port.
 _Avoid_: issue, request, email
+
+**Local Ticket System**:
+The local, durable PostgreSQL-backed ticket service used for this
+provider-limited delivery. It provides cursor reads, requester and thread
+retrieval, public replies, internal notes, tags, team assignment, status
+changes, and idempotent processing through the TicketGateway port.
+_Avoid_: Zendesk, mock Zendesk, sandbox
+
+**TicketGateway**:
+The narrow port the ticket channel uses to read and update Tickets. The Local
+Ticket System implements it for this delivery; a Zendesk adapter can implement
+it after real provider access is available.
+_Avoid_: Zendesk client in Agent Core
 
 **Customer**:
 A person contacting Othram support about a Case or service — typically law enforcement, an attorney, or a family member.
 _Avoid_: user, client, account
 
 **Zendesk Instance**:
-A real Zendesk account owned by the developer (trial/developer tier) used for the demo. Not Othram's production Zendesk — but the integration uses real Zendesk APIs end to end.
+A real Zendesk account owned by the developer (trial/developer tier), distinct
+from the Local Ticket System and from Othram's production Zendesk. Its current
+trial permissions do not allow Ticketing identity access, so real Zendesk
+ticket operations are not part of this provider-limited delivery.
 _Avoid_: mock Zendesk, staging
 
 **Voice Channel**:
