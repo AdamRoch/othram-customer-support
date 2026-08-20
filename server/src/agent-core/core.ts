@@ -47,6 +47,12 @@ export interface AgentModel {
 export interface AgentToolResult {
   output: unknown;
   reply?: string;
+  replyRequirement?: ReplyRequirement;
+}
+
+export interface ReplyRequirement {
+  citationOptions?: ReadonlyArray<string>;
+  requiredMessage?: string;
 }
 
 export interface AgentTool {
@@ -99,6 +105,24 @@ function createReplyTool(): AgentTool {
       return { output: { accepted: true }, reply: message };
     }
   };
+}
+
+function assertReplyMeetsRequirements(
+  message: string,
+  requirements: ReadonlyArray<ReplyRequirement>
+): void {
+  for (const requirement of requirements) {
+    if (requirement.requiredMessage && !message.includes(requirement.requiredMessage)) {
+      throw new Error('A knowledge search with no results requires the honest no-results response.');
+    }
+
+    if (
+      requirement.citationOptions &&
+      !requirement.citationOptions.some((citation) => message.includes(citation))
+    ) {
+      throw new Error('A knowledge-grounded reply must include a citation from the retrieved passages.');
+    }
+  }
 }
 
 export class AgentCore {
@@ -154,6 +178,7 @@ export class AgentCore {
     ];
     let previousResponseId: string | undefined;
     let toolOutputs: AgentToolOutput[] | undefined;
+    const replyRequirements: ReplyRequirement[] = [];
 
     for (let step = 0; step < 8; step += 1) {
       const response = await this.model.generate({
@@ -198,6 +223,10 @@ export class AgentCore {
           result: result.output
         });
 
+        if (result.replyRequirement) {
+          replyRequirements.push(result.replyRequirement);
+        }
+
         if (result.reply) {
           if (replyMessage !== undefined) {
             throw new Error('Agent Core received multiple reply tool calls in one step.');
@@ -216,6 +245,7 @@ export class AgentCore {
       }
 
       if (replyMessage !== undefined) {
+        assertReplyMeetsRequirements(replyMessage, replyRequirements);
         this.conversations.set(id, [
           ...messages,
           { role: 'assistant', content: replyMessage }
