@@ -6,9 +6,10 @@ Status: Accepted for the initial submission
 
 The approved full-product PRD adds a browser voice channel, Emotional Delivery,
 an operator console, webhook ingestion, and a thirteen-scenario evaluation suite
-to the original challenger brief. The current repository has completed the Case
-System, computed timelines, knowledge ingestion, embeddings, and cited search,
-but it does not yet contain the Agent Core or either complete channel.
+to the original challenger brief. At the time of this decision, the repository
+had completed the Case System, computed timelines, knowledge ingestion,
+embeddings, and cited search, but did not yet contain the Agent Core or either
+complete channel.
 
 The immediate objective is a credible submission that proves the original
 brief's central claim through a real Zendesk instance. The full design remains
