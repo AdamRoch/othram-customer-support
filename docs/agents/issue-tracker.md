@@ -1,8 +1,10 @@
 # Issue Tracker — OrbitTrack
 
-Issues live in **OrbitTrack**, a local tracker at http://localhost:3000, under
-project **`OTHRM`** (identifier prefix `OTHRM-N`). All routes are JSON in/out.
-The server must be running (`npm run dev` in the OrbitTrack repo) before any call.
+Issues live in the hosted **OrbitTrack** at https://orbittrack.adamroch.com,
+under project **`OTHRM`** (identifier prefix `OTHRM-N`). The hosted tracker is
+authoritative; do not update a local OrbitTrack instance for this project. All
+routes are JSON in/out and require `Authorization: Bearer
+$ORBITTRACK_AGENT_TOKEN`.
 
 ## Project scope — always
 
@@ -13,17 +15,19 @@ tickets will land in the wrong project.
 ## Standard workflow
 
 1. **Check the frontier** — grabbable work (todo + unblocked):
-   `curl 'localhost:3000/api/issues/frontier?project=OTHRM'`
-2. **Claim**: `curl -X POST localhost:3000/api/issues/OTHRM-42/claim`
+   `curl -H "Authorization: Bearer $ORBITTRACK_AGENT_TOKEN" 'https://orbittrack.adamroch.com/api/issues/frontier?project=OTHRM'`
+2. **Claim**: `curl -X POST -H "Authorization: Bearer $ORBITTRACK_AGENT_TOKEN" 'https://orbittrack.adamroch.com/api/issues/OTHRM-42/claim?project=OTHRM'`
    (atomically `todo` → `in_progress`; 409 if not claimable)
 3. **Do the work.**
-4. **Done**: `curl -X PATCH localhost:3000/api/issues/OTHRM-42?project=OTHRM
+4. **Done**: `curl -X PATCH 'https://orbittrack.adamroch.com/api/issues/OTHRM-42?project=OTHRM'
+   -H "Authorization: Bearer $ORBITTRACK_AGENT_TOKEN"
    -H 'content-type: application/json' -d '{"status":"done"}'`
 
 ## Creating tickets
 
 ```bash
-curl -X POST 'localhost:3000/api/issues?project=OTHRM' \
+curl -X POST 'https://orbittrack.adamroch.com/api/issues?project=OTHRM' \
+  -H "Authorization: Bearer $ORBITTRACK_AGENT_TOKEN" \
   -H 'content-type: application/json' \
   -d '{"title":"...","description":"...","status":"todo","priority":2,"labelNames":["needs-triage"]}'
 ```
@@ -35,6 +39,6 @@ curl -X POST 'localhost:3000/api/issues?project=OTHRM' \
 
 ## Blockers
 
-`POST /api/issues/OTHRM-N/blockers {"blockerId": <id or "OTHRM-M">}` creates
+`POST /api/issues/OTHRM-N/blockers?project=OTHRM {"blockerId": <id or "OTHRM-M">}` creates
 "A blocks B"; the graph is a DAG (cycles rejected). A blocked issue leaves the
 frontier until its blockers are `done`.
