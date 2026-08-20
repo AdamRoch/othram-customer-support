@@ -4,7 +4,7 @@ import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { LocalTicketGateway } from '../src/channels/ticket/local-ticket-gateway.js';
 import { stageDurationSeedData } from '../src/db/seed-data.js';
-import { runLocalTicketEval } from '../src/eval/local-ticket-eval.js';
+import { runDeterministicLocalTicketEval, runLocalTicketEval } from '../src/eval/local-ticket-eval.js';
 import { createDatabase } from '../src/db/client.js';
 import {
   cases,
@@ -150,12 +150,9 @@ describeWithDatabase('local ticket eval', () => {
 
   it('is deterministic across runs and cleans only its fixtures', async () => {
     if (!database) throw new Error('TEST_DATABASE_URL was not configured.');
-    const firstFixtures = trackedEvalFixtureIds();
-    const first = await runLocalTicketEval({ database: database.db, ...firstFixtures });
-    const secondFixtures = trackedEvalFixtureIds();
-    const second = await runLocalTicketEval({ database: database.db, ...secondFixtures });
-    expect(first).toEqual(second);
-    expect(first).toMatchObject({
+    const result = await runDeterministicLocalTicketEval({ database: database.db });
+    expect(result).toMatchObject({ runCount: 2, identical: true });
+    expect(result.scoreboard).toMatchObject({
       providerUse: { zendesk: false, openai: false },
       humanAvoidance: { resolved: 2, total: 3, rate: '66.7%', scope: 'local_eval_only' },
       scenarios: [
@@ -164,7 +161,7 @@ describeWithDatabase('local ticket eval', () => {
         { name: 'dna_reprocessing', passed: true, outcome: 'escalated' }
       ]
     });
-    await expectNoEvalFixtures([...firstFixtures.ids, ...secondFixtures.ids]);
+    await expectNoEvalFixtures([]);
   });
 
   it('cleans every fixture after an injected failure', async () => {

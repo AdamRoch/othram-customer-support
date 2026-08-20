@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { eq } from 'drizzle-orm';
 import type { AgentModel, AgentModelRequest, AgentModelResponse, KnowledgeGroundingClassifier } from '../agent-core/core.js';
 import { createLookupCaseTool } from '../agent-core/tools/lookup-case.js';
@@ -41,6 +42,12 @@ export interface LocalTicketEvalResult {
   providerUse: { zendesk: false; openai: false };
   humanAvoidance: { resolved: number; total: number; rate: string; scope: 'local_eval_only' };
   scenarios: LocalTicketEvalScenarioResult[];
+}
+
+export interface DeterministicLocalTicketEvalResult {
+  scoreboard: LocalTicketEvalResult;
+  runCount: 2;
+  identical: true;
 }
 
 export interface RunLocalTicketEvalOptions {
@@ -354,6 +361,17 @@ export async function runLocalTicketEval(options: RunLocalTicketEvalOptions): Pr
     await cleanupEvalTickets(options.database, ticketIds, cursorName, caseEmail);
     if (seeded) await cleanupEvalCase(options.database, caseNumber, caseEmail);
   }
+}
+
+export async function runDeterministicLocalTicketEval(
+  options: Pick<RunLocalTicketEvalOptions, 'database'>
+): Promise<DeterministicLocalTicketEvalResult> {
+  const first = await runLocalTicketEval(options);
+  const second = await runLocalTicketEval(options);
+  if (!isDeepStrictEqual(first, second)) {
+    throw new Error('Local ticket evaluation produced different scoreboards across two runs.');
+  }
+  return { scoreboard: first, runCount: 2, identical: true };
 }
 
 export function formatLocalTicketEval(result: LocalTicketEvalResult): string {
