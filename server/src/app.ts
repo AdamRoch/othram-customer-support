@@ -28,6 +28,28 @@ export interface BuildAppOptions {
   logger?: boolean;
 }
 
+function parseChatRequest(body: unknown): ChatRequest | null {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return null;
+  }
+
+  const { message, conversationId } = body as Record<string, unknown>;
+  if (typeof message !== 'string' || !message.trim()) {
+    return null;
+  }
+  if (
+    conversationId !== undefined &&
+    (typeof conversationId !== 'string' || !conversationId.trim())
+  ) {
+    return null;
+  }
+
+  return {
+    message: message.trim(),
+    ...(conversationId === undefined ? {} : { conversationId })
+  };
+}
+
 export async function buildApp(options: BuildAppOptions = {}) {
   const app = Fastify({ logger: options.logger ?? true });
   const ownedDatabase =
@@ -69,11 +91,11 @@ export async function buildApp(options: BuildAppOptions = {}) {
     service: 'othram-support-server'
   }));
 
-  app.post<{ Body: Partial<ChatRequest> }>(
+  app.post<{ Body: unknown }>(
     '/api/chat',
     async (request, reply): Promise<ChatResponse | ChatErrorResponse> => {
-      const message = request.body?.message?.trim();
-      if (!message) {
+      const chatRequest = parseChatRequest(request.body);
+      if (!chatRequest) {
         reply.code(400);
         return {
           error: 'INVALID_CHAT_REQUEST',
@@ -82,7 +104,7 @@ export async function buildApp(options: BuildAppOptions = {}) {
       }
 
       try {
-        return await getAgentCore().runTurn(message, request.body.conversationId);
+        return await getAgentCore().runTurn(chatRequest.message, chatRequest.conversationId);
       } catch (error) {
         if (error instanceof ConversationNotFoundError) {
           reply.code(404);

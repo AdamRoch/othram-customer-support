@@ -103,19 +103,46 @@ function createReplyTool(): AgentTool {
 
 export class AgentCore {
   private readonly conversations = new Map<string, AgentMessage[]>();
+  private readonly conversationTails = new Map<string, Promise<void>>();
   private readonly tools: Map<string, AgentTool>;
 
   constructor(
     private readonly model: AgentModel,
     private readonly createId: () => string = randomUUID,
-    tools: AgentTool[] = [createReplyTool()]
+    tools: AgentTool[] = []
   ) {
-    this.tools = new Map(tools.map((tool) => [tool.definition.name, tool]));
+    this.tools = new Map(
+      [createReplyTool(), ...tools].map((tool) => [tool.definition.name, tool])
+    );
   }
 
   async runTurn(message: string, conversationId?: string): Promise<ChatResponse> {
     const id = conversationId ?? this.createId();
-    const existingMessages = conversationId ? this.conversations.get(conversationId) : [];
+    const previousTurn = this.conversationTails.get(id) ?? Promise.resolve();
+    let releaseTurn = () => {};
+    const currentTurn = new Promise<void>((resolve) => {
+      releaseTurn = resolve;
+    });
+    const tail = previousTurn.catch(() => undefined).then(() => currentTurn);
+    this.conversationTails.set(id, tail);
+
+    await previousTurn.catch(() => undefined);
+    try {
+      return await this.runExclusiveTurn(message, id, conversationId !== undefined);
+    } finally {
+      releaseTurn();
+      if (this.conversationTails.get(id) === tail) {
+        this.conversationTails.delete(id);
+      }
+    }
+  }
+
+  private async runExclusiveTurn(
+    message: string,
+    id: string,
+    existingConversation: boolean
+  ): Promise<ChatResponse> {
+    const existingMessages = existingConversation ? this.conversations.get(id) : [];
     if (!existingMessages) {
       throw new ConversationNotFoundError(id);
     }
@@ -142,6 +169,7 @@ export class AgentCore {
       }
 
       const nextOutputs: AgentToolOutput[] = [];
+      let replyMessage: string | undefined;
       for (const call of response.toolCalls) {
         const tool = this.tools.get(call.name);
         if (!tool) {
@@ -171,6 +199,10 @@ export class AgentCore {
         });
 
         if (result.reply) {
+          if (replyMessage !== undefined) {
+            throw new Error('Agent Core received multiple reply tool calls in one step.');
+          }
+          replyMessage = result.reply;
           events.push({
             type: 'reply_created',
             conversationId: id,
@@ -178,14 +210,17 @@ export class AgentCore {
             sequence: events.length,
             message: result.reply
           });
-          this.conversations.set(id, [
-            ...messages,
-            { role: 'assistant', content: result.reply }
-          ]);
-          return { conversationId: id, reply: result.reply, events };
+        } else {
+          nextOutputs.push({ callId: call.callId, output: JSON.stringify(result.output) });
         }
+      }
 
-        nextOutputs.push({ callId: call.callId, output: JSON.stringify(result.output) });
+      if (replyMessage !== undefined) {
+        this.conversations.set(id, [
+          ...messages,
+          { role: 'assistant', content: replyMessage }
+        ]);
+        return { conversationId: id, reply: replyMessage, events };
       }
 
       previousResponseId = response.responseId;

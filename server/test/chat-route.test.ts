@@ -81,4 +81,22 @@ describe('POST /api/chat', () => {
     expect(unknown.statusCode).toBe(404);
     expect(unknown.json()).toMatchObject({ error: 'CONVERSATION_NOT_FOUND' });
   });
+
+  it('rejects invalid JSON field types', async () => {
+    const invalidMessage = await app.inject({
+      method: 'POST',
+      url: '/api/chat',
+      payload: { message: 1 }
+    });
+    const invalidConversationId = await app.inject({
+      method: 'POST',
+      url: '/api/chat',
+      payload: { conversationId: 1, message: 'Hello' }
+    });
+
+    expect(invalidMessage.statusCode).toBe(400);
+    expect(invalidMessage.json()).toMatchObject({ error: 'INVALID_CHAT_REQUEST' });
+    expect(invalidConversationId.statusCode).toBe(400);
+    expect(invalidConversationId.json()).toMatchObject({ error: 'INVALID_CHAT_REQUEST' });
+  });
 });
