@@ -104,6 +104,32 @@ export interface KnowledgeSearchBadRequestResponse {
   message: string;
 }
 
+export const escalationReasons = [
+  'COMPLEX_ISSUE',
+  'OUTSIDE_STANDARD_PROCEDURES',
+  'CUSTOMER_FRUSTRATED',
+  'BILLING_DISPUTE',
+  'TECHNICAL_PROBLEM',
+  'CUSTOMER_REQUESTS_HUMAN',
+  'LOW_CONFIDENCE'
+] as const;
+
+export type EscalationReason = (typeof escalationReasons)[number];
+
+export const customerEmotionalStates = [
+  'NEUTRAL',
+  'CALM',
+  'FRUSTRATED',
+  'ANGRY',
+  'ANXIOUS',
+  'SAD',
+  'HUMOROUS'
+] as const;
+
+export type CustomerEmotionalState = (typeof customerEmotionalStates)[number];
+
+export type EscalationTeam = 'Technical Team' | 'Billing' | 'General Support';
+
 export type AgentEvent =
   | {
       type: 'turn_started';
@@ -136,6 +162,30 @@ export type AgentEvent =
       turnId: string;
       sequence: number;
       message: string;
+      knowledgeGroundingDecision: 'REQUIRED' | 'NOT_APPLICABLE';
+    }
+  | {
+      type: 'confidence_recorded';
+      conversationId: string;
+      turnId: string;
+      sequence: number;
+      confidence: number;
+    }
+  | {
+      type: 'customer_emotion_recorded';
+      conversationId: string;
+      turnId: string;
+      sequence: number;
+      emotionalState: CustomerEmotionalState;
+    }
+  | {
+      type: 'escalated';
+      conversationId: string;
+      turnId: string;
+      sequence: number;
+      reason: EscalationReason;
+      summary: string;
+      team: EscalationTeam;
     };
 
 export interface ChatRequest {
@@ -145,7 +195,7 @@ export interface ChatRequest {
 
 export interface ChatResponse {
   conversationId: string;
-  reply: string;
+  reply: string | null;
   events: AgentEvent[];
 }
 

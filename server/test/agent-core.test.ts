@@ -1,10 +1,12 @@
 import { describe, expect, it } from 'vitest';
-import { AgentCore } from '../src/agent-core/core.js';
+import { AgentCore, ESCALATION_ACKNOWLEDGMENT_MESSAGE } from '../src/agent-core/core.js';
+import { escalationReasons } from '@othram/shared';
 import type {
   AgentModel,
   AgentModelRequest,
   AgentModelResponse,
-  AgentTool
+  AgentTool,
+  KnowledgeGroundingClassifier
 } from '../src/agent-core/core.js';
 
 class ReplyingModel implements AgentModel {
@@ -24,7 +26,12 @@ class ReplyingModel implements AgentModel {
         {
           callId: `call-${this.requests.length}`,
           name: 'reply',
-          arguments: JSON.stringify({ message })
+          arguments: JSON.stringify({
+            message,
+            confidence: 0.9,
+            emotionalState: 'NEUTRAL',
+            knowledgeGroundingDecision: 'NOT_APPLICABLE'
+          })
         }
       ]
     };
@@ -64,7 +71,12 @@ describe('AgentCore', () => {
           sequence: 1,
           callId: 'call-1',
           toolName: 'reply',
-          arguments: { message: 'Reply 1' }
+          arguments: {
+            message: 'Reply 1',
+            confidence: 0.9,
+            emotionalState: 'NEUTRAL',
+            knowledgeGroundingDecision: 'NOT_APPLICABLE'
+          }
         },
         {
           type: 'tool_completed',
@@ -76,15 +88,30 @@ describe('AgentCore', () => {
           result: { accepted: true }
         },
         {
-          type: 'reply_created',
+          type: 'confidence_recorded',
           conversationId: 'conversation-1',
           turnId: 'turn-1',
           sequence: 3,
-          message: 'Reply 1'
+          confidence: 0.9
+        },
+        {
+          type: 'customer_emotion_recorded',
+          conversationId: 'conversation-1',
+          turnId: 'turn-1',
+          sequence: 4,
+          emotionalState: 'NEUTRAL'
+        },
+        {
+          type: 'reply_created',
+          conversationId: 'conversation-1',
+          turnId: 'turn-1',
+          sequence: 5,
+          message: 'Reply 1',
+          knowledgeGroundingDecision: 'NOT_APPLICABLE'
         }
       ]
     });
-    expect(model.requests[0]?.tools.map((tool) => tool.name)).toEqual(['reply']);
+    expect(model.requests[0]?.tools.map((tool) => tool.name)).toEqual(['reply', 'escalate']);
   });
 
   it('carries prior Customer and agent messages into the next turn', async () => {
@@ -101,6 +128,44 @@ describe('AgentCore', () => {
       { role: 'user', content: 'First question' },
       { role: 'assistant', content: 'Reply 1' },
       { role: 'user', content: 'Follow-up question' }
+    ]);
+  });
+
+  it('classifies a follow-up with its conversation history', async () => {
+    const model = new ReplyingModel();
+    const classifiedConversations: unknown[] = [];
+    const classifier: KnowledgeGroundingClassifier = {
+      async classify(messages) {
+        classifiedConversations.push(messages);
+        return 'NOT_APPLICABLE';
+      }
+    };
+    const searchTool: AgentTool = {
+      definition: {
+        type: 'function',
+        name: 'search_knowledge',
+        description: 'Search knowledge.',
+        parameters: { type: 'object', properties: {}, additionalProperties: false }
+      },
+      async execute() {
+        return { output: [] };
+      }
+    };
+    const core = new AgentCore(
+      model,
+      sequentialIds('conversation-1', 'turn-1', 'turn-2'),
+      [searchTool],
+      undefined,
+      classifier
+    );
+
+    await core.runTurn('Can I use an Othram photo in an article?');
+    await core.runTurn('Does that also apply to videos?', 'conversation-1');
+
+    expect(classifiedConversations[1]).toEqual([
+      { role: 'user', content: 'Can I use an Othram photo in an article?' },
+      { role: 'assistant', content: 'Reply 1' },
+      { role: 'user', content: 'Does that also apply to videos?' }
     ]);
   });
 
@@ -136,7 +201,7 @@ describe('AgentCore', () => {
           responseId: 'response-1',
           outputText: '',
           toolCalls: [
-            { callId: 'reply-call', name: 'reply', arguments: '{"message":"Done"}' },
+            { callId: 'reply-call', name: 'reply', arguments: '{"message":"Done","confidence":0.9,"emotionalState":"NEUTRAL","knowledgeGroundingDecision":"NOT_APPLICABLE"}' },
             { callId: 'audit-call', name: 'audit', arguments: '{"caseId":"case-1"}' }
           ]
         };
@@ -155,6 +220,159 @@ describe('AgentCore', () => {
     expect(
       result.events.filter((event) => event.type === 'tool_completed').map((event) => event.toolName)
     ).toEqual(['reply', 'audit']);
+  });
+
+  it('records each trigger as a machine-readable escalation event', async () => {
+    for (const reason of escalationReasons) {
+      const core = new AgentCore(
+        {
+          async generate() {
+            return {
+              responseId: 'response-1',
+              outputText: '',
+              toolCalls: [
+                {
+                  callId: 'escalate-call',
+                  name: 'escalate',
+                  arguments: JSON.stringify({
+                    reason,
+                    summary: 'A human decision is required.',
+                    team: 'General Support',
+                    emotionalState: 'FRUSTRATED'
+                  })
+                }
+              ]
+            };
+          }
+        },
+        sequentialIds(`conversation-${reason}`, `turn-${reason}`)
+      );
+
+      const result = await core.runTurn('Please help.');
+      const escalation = result.events.find((event) => event.type === 'escalated');
+      expect(result.reply).toBe(ESCALATION_ACKNOWLEDGMENT_MESSAGE);
+      expect(result.events.find((event) => event.type === 'reply_created')).toMatchObject({
+        message: ESCALATION_ACKNOWLEDGMENT_MESSAGE,
+        knowledgeGroundingDecision: 'NOT_APPLICABLE'
+      });
+      expect(escalation).toMatchObject({
+        reason,
+        summary: 'A human decision is required.',
+        team: 'General Support'
+      });
+      expect(result.events.some((event) => event.type === 'customer_emotion_recorded')).toBe(true);
+    }
+  });
+
+  it('suppresses a draft below the configured confidence threshold', async () => {
+    const core = new AgentCore(
+      {
+        async generate() {
+          return {
+            responseId: 'response-1',
+            outputText: '',
+            toolCalls: [
+              {
+                callId: 'reply-call',
+                name: 'reply',
+                arguments: '{"message":"Draft","confidence":0.69,"emotionalState":"NEUTRAL","knowledgeGroundingDecision":"NOT_APPLICABLE"}'
+              }
+            ]
+          };
+        }
+      },
+      sequentialIds('conversation-1', 'turn-1'),
+      [],
+      { confidenceThreshold: 0.7 }
+    );
+
+    const result = await core.runTurn('Where is my Case?');
+    expect(result.reply).toBe(ESCALATION_ACKNOWLEDGMENT_MESSAGE);
+    expect(result.events.find((event) => event.type === 'reply_created')).toMatchObject({
+      knowledgeGroundingDecision: 'NOT_APPLICABLE'
+    });
+    expect(result.events.map((event) => event.type)).toEqual([
+      'turn_started',
+      'tool_called',
+      'tool_completed',
+      'confidence_recorded',
+      'customer_emotion_recorded',
+      'reply_created',
+      'escalated'
+    ]);
+    expect(result.events.find((event) => event.type === 'escalated')).toMatchObject({
+      reason: 'LOW_CONFIDENCE',
+      team: 'General Support'
+    });
+  });
+
+  it('sends a draft at the confidence threshold', async () => {
+    const core = new AgentCore(
+      {
+        async generate() {
+          return {
+            responseId: 'response-1',
+            outputText: '',
+            toolCalls: [
+              {
+                callId: 'reply-call',
+                name: 'reply',
+                arguments: '{"message":"Your Case is in review.","confidence":0.7,"emotionalState":"NEUTRAL","knowledgeGroundingDecision":"NOT_APPLICABLE"}'
+              }
+            ]
+          };
+        }
+      },
+      sequentialIds('conversation-1', 'turn-1'),
+      [],
+      { confidenceThreshold: 0.7 }
+    );
+
+    const result = await core.runTurn('Where is my Case?');
+    expect(result.reply).toBe('Your Case is in review.');
+    expect(result.events.some((event) => event.type === 'escalated')).toBe(false);
+    expect(result.events.find((event) => event.type === 'customer_emotion_recorded')).toMatchObject({
+      emotionalState: 'NEUTRAL'
+    });
+  });
+
+  it('escalates a frustrated Customer read and records exactly one emotion event', async () => {
+    const core = new AgentCore(
+      {
+        async generate() {
+          return {
+            responseId: 'response-1',
+            outputText: '',
+            toolCalls: [
+              {
+                callId: 'reply-call',
+                name: 'reply',
+                arguments: '{"message":"I am sorry this has been difficult.","confidence":0.99,"emotionalState":"FRUSTRATED","knowledgeGroundingDecision":"NOT_APPLICABLE"}'
+              }
+            ]
+          };
+        }
+      },
+      sequentialIds('conversation-1', 'turn-1')
+    );
+
+    const result = await core.runTurn('This delay is unacceptable.');
+    expect(result.reply).toBe(ESCALATION_ACKNOWLEDGMENT_MESSAGE);
+    expect(result.events.filter((event) => event.type === 'customer_emotion_recorded')).toHaveLength(1);
+    expect(result.events.find((event) => event.type === 'escalated')).toMatchObject({
+      reason: 'CUSTOMER_FRUSTRATED',
+      team: 'General Support'
+    });
+  });
+
+  it('rejects invalid confidence thresholds', () => {
+    const model = new ReplyingModel();
+    expect(() => new AgentCore(model, undefined, [], { confidenceThreshold: -0.1 })).toThrow(
+      'confidenceThreshold must be a finite number from 0 to 1.'
+    );
+    expect(() => new AgentCore(model, undefined, [], { confidenceThreshold: Number.NaN })).toThrow(
+      'confidenceThreshold must be a finite number from 0 to 1.'
+    );
   });
 
   it('serializes concurrent turns for the same conversation', async () => {

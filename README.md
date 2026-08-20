@@ -42,6 +42,12 @@ curl -X POST http://localhost:3001/api/chat \
   -d '{"conversationId":"<conversation-id>","message":"One more question"}'
 ```
 
+Policy and process replies are grounded in retrieved knowledge passages and
+include a source citation. Each completed turn also returns typed events for
+the Customer emotional-state read and any escalation. Escalated turns return a
+polite Customer acknowledgment, or the canonical no-results message when a
+required knowledge search found nothing.
+
 The optional model override is documented in [`.env.example`](.env.example).
 
 ## Database

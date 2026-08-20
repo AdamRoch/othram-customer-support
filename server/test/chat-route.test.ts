@@ -14,7 +14,12 @@ const model: AgentModel = {
         {
           callId: 'call-1',
           name: 'reply',
-          arguments: JSON.stringify({ message: `You said: ${request.messages.at(-1)?.content}` })
+          arguments: JSON.stringify({
+            message: `You said: ${request.messages.at(-1)?.content}`,
+            confidence: 0.9,
+            emotionalState: 'NEUTRAL',
+            knowledgeGroundingDecision: 'NOT_APPLICABLE'
+          })
         }
       ]
     };

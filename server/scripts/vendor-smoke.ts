@@ -10,6 +10,7 @@ import { execFile as execFileCallback } from 'node:child_process';
 import { readFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import {
   AudioFormat,
@@ -236,7 +237,7 @@ async function zendeskAccessToken(): Promise<string> {
   return payload.access_token;
 }
 
-async function checkZendeskTicket(): Promise<CheckResult> {
+export async function checkZendeskTicket(): Promise<CheckResult> {
   const subdomain = requiredEnv('ZENDESK_SUBDOMAIN');
   let accessToken = '';
   try {
@@ -245,6 +246,9 @@ async function checkZendeskTicket(): Promise<CheckResult> {
       authorization: `Bearer ${accessToken}`,
       'content-type': 'application/json',
     };
+    const identity = await fetch(`https://${subdomain}.zendesk.com/api/v2/users/me.json`, { headers });
+    if (!identity.ok) throw new SmokeFailure(`Zendesk identity read returned HTTP ${identity.status}`);
+
     const created = await fetch(`https://${subdomain}.zendesk.com/api/v2/tickets.json`, {
       method: 'POST',
       headers,
@@ -268,7 +272,10 @@ async function checkZendeskTicket(): Promise<CheckResult> {
     accessToken = '';
   }
 
-  return { name: 'Zendesk authenticated ticket', detail: 'client-credentials token created one disposable trial ticket and read back the same ticket' };
+  return {
+    name: 'Zendesk authenticated ticket',
+    detail: 'client-credentials token completed a read-only identity check, then created and read back one disposable trial ticket',
+  };
 }
 
 async function main(): Promise<void> {
@@ -301,6 +308,8 @@ async function main(): Promise<void> {
   }
 }
 
-void main().catch(() => {
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  void main().catch(() => {
+    process.exitCode = 1;
+  });
+}
