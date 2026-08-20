@@ -5,6 +5,7 @@ import { createLookupCaseTool } from '../agent-core/tools/lookup-case.js';
 import { createCaseTimelineRepository } from '../cases/repository.js';
 import { createTicketAgentCoreFactory } from '../channels/ticket/agent-core.js';
 import { LocalTicketGateway } from '../channels/ticket/local-ticket-gateway.js';
+import type { TicketActionOptions, TicketComment, TicketGateway, TicketThread } from '../channels/ticket/gateway.js';
 import { TicketPollingWorker } from '../channels/ticket/polling-worker.js';
 import type { createDatabase } from '../db/client.js';
 import {
@@ -18,6 +19,7 @@ import {
   ticketWorkItems
 } from '../db/schema.js';
 import type { KnowledgeSearchResult, KnowledgeSearchService } from '../knowledge/search.js';
+import { loadKnowledgeChunks } from '../knowledge/chunking.js';
 
 type Database = ReturnType<typeof createDatabase>['db'];
 
@@ -39,22 +41,10 @@ export interface RunLocalTicketEvalOptions {
   failAfterScenario?: 'case_status' | 'photo_permission' | 'dna_reprocessing';
 }
 
-const EVAL_CURSOR = 'local-ticket-eval';
 const EVAL_NOW = new Date('2026-08-17T12:00:00.000Z');
-const CASE_NUMBER = 'OTHRM-EVAL-CASE';
-const CASE_EMAIL = 'eval.case@othram-demo.test';
-const MEDIA_POLICY: KnowledgeSearchResult = {
-  content: 'Othram-provided case media may be used when written permission is granted for the requested publication.',
-  citation: {
-    document: 'Media Permission Policy',
-    section: 'Publishing case media',
-    category: 'policy',
-    sourcePath: 'server/src/knowledge/10-media-permission-policy.md'
-  },
-  similarity: 1
-};
-
 class EvalModel implements AgentModel {
+  constructor(private readonly caseNumber: string) {}
+
   async generate(request: AgentModelRequest): Promise<AgentModelResponse> {
     const latest = request.messages.at(-1)?.content ?? '';
     const hasLookupResult = request.toolOutputs?.some((output) => output.callId === 'lookup-case') ?? false;
@@ -63,7 +53,7 @@ class EvalModel implements AgentModel {
     if (latest.includes('photo')) {
       if (!hasSearchResult) return toolResponse('search-policy', 'search_knowledge', { query: 'photo permission' });
       return toolResponse('reply-photo', 'reply', {
-        message: 'You may use the photo with written permission for the requested publication. [Media Permission Policy §Publishing case media]',
+        message: 'Permission is granted for your requested use of the Othram-provided media. [Media Permission Policy §Policy]',
         confidence: 0.95,
         emotionalState: 'NEUTRAL',
         knowledgeGroundingDecision: 'REQUIRED'
@@ -80,7 +70,7 @@ class EvalModel implements AgentModel {
     }
 
     if (!hasLookupResult) {
-      return toolResponse('lookup-case', 'lookup_case', { caseNumber: CASE_NUMBER, scope: 'status' });
+      return toolResponse('lookup-case', 'lookup_case', { caseNumber: this.caseNumber, scope: 'status' });
     }
     const lookupOutput = request.toolOutputs?.find((output) => output.callId === 'lookup-case');
     const customerMessage = lookupOutput ? JSON.parse(lookupOutput.output).customerMessage : undefined;
@@ -104,12 +94,28 @@ const evalGroundingClassifier: KnowledgeGroundingClassifier = {
   }
 };
 
-const evalKnowledgeSearch: KnowledgeSearchService = {
-  async search(query) {
-    if (!query.toLowerCase().includes('photo')) throw new Error(`Unexpected deterministic eval search: ${query}`);
-    return [MEDIA_POLICY];
-  }
-};
+async function createEvalKnowledgeSearch(): Promise<KnowledgeSearchService> {
+  const policy = (await loadKnowledgeChunks()).find((chunk) =>
+    chunk.documentTitle === 'Media Permission Policy' && chunk.sectionTitle === 'Policy'
+  );
+  if (!policy) throw new Error('The local Media Permission Policy chunk is missing.');
+  const result: KnowledgeSearchResult = {
+    content: policy.content,
+    citation: {
+      document: policy.documentTitle,
+      section: policy.sectionTitle,
+      category: policy.documentSection,
+      sourcePath: policy.sourcePath
+    },
+    similarity: 1
+  };
+  return {
+    async search(query) {
+      if (!query.toLowerCase().includes('photo')) throw new Error(`Unexpected deterministic eval search: ${query}`);
+      return [result];
+    }
+  };
+}
 
 function evalResult(scenarios: LocalTicketEvalScenarioResult[]): LocalTicketEvalResult {
   const resolved = scenarios.filter((scenario) => scenario.outcome === 'resolved' && scenario.passed).length;
@@ -120,14 +126,77 @@ function evalResult(scenarios: LocalTicketEvalScenarioResult[]): LocalTicketEval
   };
 }
 
-async function seedEvalCase(database: Database): Promise<void> {
+/**
+ * The evaluator is a tenant of the Local Ticket System, not its owner. This
+ * adapter makes the worker unable to see or mutate tickets the eval did not
+ * create, even when DATABASE_URL points at a developer's active local DB.
+ */
+class EvalOnlyTicketGateway implements TicketGateway {
+  private readonly allowedTicketIds = new Set<string>();
+
+  constructor(private readonly delegate: LocalTicketGateway) {}
+
+  async listRequesterUpdates(input?: { cursor?: string; limit?: number }) {
+    // A normal database can have an arbitrarily long history before this run's
+    // first fixture. Advance through it inside the adapter rather than letting
+    // one worker poll stop before reaching the owned ticket.
+    let cursor = input?.cursor;
+    for (;;) {
+      const page = await this.delegate.listRequesterUpdates({ ...input, cursor });
+      const owned = page.updates.filter((update) => this.allowedTicketIds.has(update.ticket.id));
+      if (owned.length > 0 || page.updates.length === 0 || page.nextCursor === null || page.nextCursor === cursor) {
+        return { ...page, updates: owned };
+      }
+      cursor = page.nextCursor;
+    }
+  }
+
+  async getTicket(ticketId: string): Promise<TicketThread | null> {
+    this.requireAllowed(ticketId);
+    return this.delegate.getTicket(ticketId);
+  }
+
+  async createTicket(input: { requester: { name: string; email: string }; subject: string; message: string }) {
+    const ticket = await this.delegate.createTicket(input);
+    this.allowedTicketIds.add(ticket.id);
+    return ticket;
+  }
+
+  async addRequesterComment(ticketId: string, input: { message: string } & TicketActionOptions) {
+    this.requireAllowed(ticketId);
+    return this.delegate.addRequesterComment(ticketId, input);
+  }
+
+  async addPublicReply(ticketId: string, input: { message: string } & TicketActionOptions): Promise<TicketComment> {
+    this.requireAllowed(ticketId);
+    return this.delegate.addPublicReply(ticketId, input);
+  }
+
+  async addInternalNote(ticketId: string, input: { message: string } & TicketActionOptions): Promise<TicketComment> {
+    this.requireAllowed(ticketId);
+    return this.delegate.addInternalNote(ticketId, input);
+  }
+
+  async updateTicket(ticketId: string, input: {
+    addTags?: string[]; team?: TicketThread['team']; status?: TicketThread['status'];
+  } & TicketActionOptions) {
+    this.requireAllowed(ticketId);
+    return this.delegate.updateTicket(ticketId, input);
+  }
+
+  private requireAllowed(ticketId: string): void {
+    if (!this.allowedTicketIds.has(ticketId)) throw new Error(`Eval cannot access non-owned ticket ${ticketId}.`);
+  }
+}
+
+async function seedEvalCase(database: Database, caseNumber: string, caseEmail: string): Promise<void> {
   await database.transaction(async (tx) => {
     const [customer] = await tx
       .select({ id: customers.id })
       .from(customers)
-      .where(eq(customers.email, CASE_EMAIL));
+      .where(eq(customers.email, caseEmail));
     const customerId = customer?.id ?? (await tx.insert(customers).values({
-      name: 'Eval Case Requester', email: CASE_EMAIL, phone: '+1-512-555-0199'
+      name: 'Eval Case Requester', email: caseEmail, phone: '+1-512-555-0199'
     }).returning({ id: customers.id }))[0]?.id;
     if (!customerId) throw new Error('Could not seed the local eval customer.');
     await tx.insert(stageDurations).values([
@@ -137,13 +206,20 @@ async function seedEvalCase(database: Database): Promise<void> {
       { stage: 'REVIEW', standardDays: 2 }, { stage: 'DELIVERED', standardDays: 0 }
     ]).onConflictDoNothing();
     await tx.insert(cases).values({
-      caseNumber: CASE_NUMBER, customerId, serviceType: 'Forensic DNA identification', currentStage: 'EXTRACTION',
+      caseNumber, customerId, serviceType: 'Forensic DNA identification', currentStage: 'EXTRACTION',
       stageEnteredAt: new Date('2026-08-14T12:00:00.000Z'), submittedAt: new Date('2026-08-13T12:00:00.000Z'), delayed: false, notes: null
-    }).onConflictDoUpdate({ target: cases.caseNumber, set: { customerId, currentStage: 'EXTRACTION', stageEnteredAt: new Date('2026-08-14T12:00:00.000Z'), delayed: false } });
+    }).onConflictDoNothing();
   });
 }
 
-async function cleanupEvalTickets(database: Database, ticketIds: string[]): Promise<void> {
+async function cleanupEvalCase(database: Database, caseNumber: string, caseEmail: string): Promise<void> {
+  await database.transaction(async (tx) => {
+    await tx.delete(cases).where(eq(cases.caseNumber, caseNumber));
+    await tx.delete(customers).where(eq(customers.email, caseEmail));
+  });
+}
+
+async function cleanupEvalTickets(database: Database, ticketIds: string[], cursorName: string): Promise<void> {
   if (ticketIds.length === 0) return;
   await database.transaction(async (tx) => {
     for (const ticketId of ticketIds) {
@@ -152,48 +228,54 @@ async function cleanupEvalTickets(database: Database, ticketIds: string[]): Prom
       await tx.delete(localTicketComments).where(eq(localTicketComments.ticketId, ticketId));
       await tx.delete(localTickets).where(eq(localTickets.id, ticketId));
     }
-    await tx.delete(ticketIngestionCursors).where(eq(ticketIngestionCursors.name, EVAL_CURSOR));
+    await tx.delete(ticketIngestionCursors).where(eq(ticketIngestionCursors.name, cursorName));
   });
 }
 
 export async function runLocalTicketEval(options: RunLocalTicketEvalOptions): Promise<LocalTicketEvalResult> {
-  await seedEvalCase(options.database);
-  const gateway = new LocalTicketGateway(options.database);
+  const runId = randomUUID();
+  const caseNumber = `OTHRM-EVAL-${runId}`;
+  const caseEmail = `eval.case+${runId}@othram-demo.test`;
+  await seedEvalCase(options.database, caseNumber, caseEmail);
+  const knowledgeSearch = await createEvalKnowledgeSearch();
+  const cursorName = `local-ticket-eval:${randomUUID()}`;
+  const gateway = new EvalOnlyTicketGateway(new LocalTicketGateway(options.database));
   const ticketIds: string[] = [];
   const worker = new TicketPollingWorker({
     database: options.database,
     gateway,
-    cursorName: EVAL_CURSOR,
+    cursorName,
     now: () => EVAL_NOW,
     createId: randomUUID,
     createAgentCore: createTicketAgentCoreFactory({
-      model: new EvalModel(),
+      model: new EvalModel(caseNumber),
       lookupCase: createLookupCaseTool({ repository: createCaseTimelineRepository(options.database), now: () => EVAL_NOW }),
-      knowledgeSearch: evalKnowledgeSearch,
+      knowledgeSearch,
       knowledgeGroundingClassifier: evalGroundingClassifier
     })
   });
   const scenarios: LocalTicketEvalScenarioResult[] = [];
 
   try {
-    const statusTicket = await gateway.createTicket({ requester: { name: 'Eval Case Requester', email: CASE_EMAIL }, subject: 'Eval case status', message: `What is the status of ${CASE_NUMBER}?` });
+    const statusTicket = await gateway.createTicket({ requester: { name: 'Eval Case Requester', email: caseEmail }, subject: 'Eval case status', message: `What is the status of ${caseNumber}?` });
     ticketIds.push(statusTicket.id);
     await worker.drain();
     const statusThread = await gateway.getTicket(statusTicket.id);
-    const statusPassed = statusThread?.status === 'solved' && statusThread.comments.at(-1)?.body.includes(CASE_NUMBER) === true;
+    const statusReplies = statusThread?.comments.filter((comment) => comment.author === 'agent' && comment.isPublic) ?? [];
+    const statusPassed = statusThread?.status === 'solved' && statusReplies.length === 1 && statusReplies[0]?.body.includes(caseNumber) === true;
     scenarios.push({ name: 'case_status', passed: statusPassed, outcome: 'resolved' });
     if (options.failAfterScenario === 'case_status') throw new Error('Injected eval failure after case_status.');
 
-    const photoTicket = await gateway.createTicket({ requester: { name: 'Eval Case Requester', email: CASE_EMAIL }, subject: 'Eval photo permission', message: 'May I publish an Othram photo?' });
+    const photoTicket = await gateway.createTicket({ requester: { name: 'Eval Case Requester', email: caseEmail }, subject: 'Eval photo permission', message: 'May I publish an Othram photo?' });
     ticketIds.push(photoTicket.id);
     await worker.drain();
     const photoThread = await gateway.getTicket(photoTicket.id);
     const photoReplies = photoThread?.comments.filter((comment) => comment.author === 'agent' && comment.isPublic) ?? [];
-    const photoPassed = photoThread?.status === 'solved' && photoReplies.length === 1 && photoReplies[0]?.body.includes('[Media Permission Policy §Publishing case media]') === true;
+    const photoPassed = photoThread?.status === 'solved' && photoReplies.length === 1 && photoReplies[0]?.body.includes('[Media Permission Policy §Policy]') === true;
     scenarios.push({ name: 'photo_permission', passed: photoPassed, outcome: 'resolved' });
     if (options.failAfterScenario === 'photo_permission') throw new Error('Injected eval failure after photo_permission.');
 
-    const technicalTicket = await gateway.createTicket({ requester: { name: 'Eval Case Requester', email: CASE_EMAIL }, subject: 'Eval DNA reprocessing', message: 'My DNA result looks like a mismatch. Please reprocess it.' });
+    const technicalTicket = await gateway.createTicket({ requester: { name: 'Eval Case Requester', email: caseEmail }, subject: 'Eval DNA reprocessing', message: 'My DNA result looks like a mismatch. Please reprocess it.' });
     ticketIds.push(technicalTicket.id);
     await worker.drain();
     const technicalThread = await gateway.getTicket(technicalTicket.id);
@@ -208,7 +290,8 @@ export async function runLocalTicketEval(options: RunLocalTicketEvalOptions): Pr
     if (scenarios.some((scenario) => !scenario.passed)) throw new Error('One or more local ticket eval scenarios failed.');
     return evalResult(scenarios);
   } finally {
-    await cleanupEvalTickets(options.database, ticketIds);
+    await cleanupEvalTickets(options.database, ticketIds, cursorName);
+    await cleanupEvalCase(options.database, caseNumber, caseEmail);
   }
 }
 
