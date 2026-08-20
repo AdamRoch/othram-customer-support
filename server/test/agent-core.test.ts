@@ -5,7 +5,8 @@ import type {
   AgentModel,
   AgentModelRequest,
   AgentModelResponse,
-  AgentTool
+  AgentTool,
+  KnowledgeGroundingClassifier
 } from '../src/agent-core/core.js';
 
 class ReplyingModel implements AgentModel {
@@ -127,6 +128,44 @@ describe('AgentCore', () => {
       { role: 'user', content: 'First question' },
       { role: 'assistant', content: 'Reply 1' },
       { role: 'user', content: 'Follow-up question' }
+    ]);
+  });
+
+  it('classifies a follow-up with its conversation history', async () => {
+    const model = new ReplyingModel();
+    const classifiedConversations: unknown[] = [];
+    const classifier: KnowledgeGroundingClassifier = {
+      async classify(messages) {
+        classifiedConversations.push(messages);
+        return 'NOT_APPLICABLE';
+      }
+    };
+    const searchTool: AgentTool = {
+      definition: {
+        type: 'function',
+        name: 'search_knowledge',
+        description: 'Search knowledge.',
+        parameters: { type: 'object', properties: {}, additionalProperties: false }
+      },
+      async execute() {
+        return { output: [] };
+      }
+    };
+    const core = new AgentCore(
+      model,
+      sequentialIds('conversation-1', 'turn-1', 'turn-2'),
+      [searchTool],
+      undefined,
+      classifier
+    );
+
+    await core.runTurn('Can I use an Othram photo in an article?');
+    await core.runTurn('Does that also apply to videos?', 'conversation-1');
+
+    expect(classifiedConversations[1]).toEqual([
+      { role: 'user', content: 'Can I use an Othram photo in an article?' },
+      { role: 'assistant', content: 'Reply 1' },
+      { role: 'user', content: 'Does that also apply to videos?' }
     ]);
   });
 

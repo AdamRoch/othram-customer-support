@@ -82,7 +82,7 @@ export type KnowledgeGroundingDecision = 'REQUIRED' | 'NOT_APPLICABLE';
  * decision, never make it.
  */
 export interface KnowledgeGroundingClassifier {
-  classify(message: string): Promise<KnowledgeGroundingDecision>;
+  classify(messages: readonly AgentMessage[]): Promise<KnowledgeGroundingDecision>;
 }
 
 export const failClosedKnowledgeGroundingClassifier: KnowledgeGroundingClassifier = {
@@ -320,7 +320,7 @@ export class AgentCore {
     let latestSearchRequirement: ReplyRequirement | undefined;
     let latestSearchResultDeliveredToModel = false;
     const turnGroundingDecision: KnowledgeGroundingDecision = this.hasKnowledgeSearch
-      ? await this.knowledgeGroundingClassifier.classify(message)
+      ? await this.knowledgeGroundingClassifier.classify(messages)
       : 'NOT_APPLICABLE';
 
     for (let step = 0; step < 8; step += 1) {
