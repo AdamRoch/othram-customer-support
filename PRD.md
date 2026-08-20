@@ -238,14 +238,16 @@ auditable event feeding the human-avoidance metric.
 ├── shared/          # shared types (events, tool calls)
 ├── docker-compose.yml  # Postgres + pgvector
 ├── CONTEXT.md       # domain glossary
-└── docs/adr/        # 0001–0006
+└── docs/adr/        # 0001–0008
 ```
 
-Run: `docker compose up -d` → `pnpm seed` → `pnpm zendesk:setup` → `pnpm dev`.
-Evaluate: `pnpm eval`.
+Current Local Ticket System run path: `docker compose up -d` →
+`pnpm db:migrate` → `pnpm seed` → `pnpm dev`.
+Run the current automated checks with `pnpm test`.
 
-Environment: `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`, `ZENDESK_SUBDOMAIN`,
-`ZENDESK_CLIENT_ID`, and `ZENDESK_CLIENT_SECRET`.
+Current vendor environment: `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`, and
+`ELEVENLABS_VOICE_ID`. Zendesk credentials and setup are future
+administrator-owned work gated by OTHRM-29, not current runtime requirements.
 
 ## 9. Acceptance — eval scenario suite
 
