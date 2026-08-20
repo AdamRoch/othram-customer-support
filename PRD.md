@@ -5,22 +5,30 @@
 - Source brief: `othram-csa-project.md`
 - Domain glossary: `CONTEXT.md` · Decisions: `docs/adr/0001–0008`
 
+> **Current provider-limited delivery boundary:** the implemented and verified
+> product is the durable PostgreSQL-backed Local Ticket System plus its
+> three-scenario deterministic local evaluation. Browser voice, webhooks,
+> Emotional Delivery, the operator console, response-time targets, and a
+> filmed demo remain target scope. They have no current implementation or
+> proof. Real Zendesk ticket operations are blocked by HTTP 403 and remain
+> administrator-owned OTHRM-29 work.
+
 ## 1. Overview
 
 An AI-powered customer support agent for Othram (forensic genomics), built as a
-challenger-project demo. The agent resolves customer inquiries autonomously
-across two channels — **Local Ticket System Tickets** and a **browser voice interface** —
-and escalates to humans only when necessary.
+challenger-project demo. The long-term design resolves customer inquiries
+across Local Ticket System Tickets and a browser voice interface, escalating to
+humans only when necessary. The current delivery implements only the local
+ticket portion.
 
 ADR 0008 updates the current delivery boundary because the Zendesk trial cannot
 perform Ticketing operations. The original real-Zendesk design remains the
 future target, but current ticket behavior and evidence come only from the
 provider-neutral `TicketGateway` and its durable PostgreSQL implementation.
 
-The killer feature is **Emotional Delivery** on the voice channel: the agent
-modulates its spoken voice in response to the customer's emotional state —
-quieter and calmer when the customer is angry, a slight chuckle when the
-customer makes a joke — as a *designed, directed behavior*, not an emergent one.
+The target killer feature is **Emotional Delivery** on the deferred voice
+channel: the agent would modulate its spoken voice in response to the
+customer's emotional state. This is design direction, not current behavior.
 
 The primary metric is **human avoidance rate**: the percentage of inquiries
 resolved without escalation.
@@ -31,24 +39,28 @@ resolved without escalation.
 |---|---|
 | Human avoidance rate | Maximized across the eval scenario suite (§9) |
 | Response accuracy | Zero hallucinated case facts or policy claims — enforced by construction (§5.4, §6.3) |
-| Ticket response time | Under 5 minutes from ticket creation |
+| Ticket response time | Target: under 5 minutes from ticket creation; no current local-delivery SLA is validated |
 | Escalation judgment | Every escalation carries an explicit, logged reason from the trigger list (§7) |
-| Demo quality | Filmable voice demo showing Emotional Delivery visibly working |
+| Demo quality | Target: filmable voice demo showing Emotional Delivery; no current filmed-demo proof |
 
 ## 3. Scope
 
-**In scope:**
+**Current delivery in scope:**
 - Durable Local Ticket System behind the provider-neutral `TicketGateway` (ADR 0008)
 - Simulated Case System (local, seeded, behind an interface)
-- Browser voice channel with Emotional Delivery
 - Knowledge base with grounded (cited) answers
 - Atomic, crash-safe Local Ticket System escalation execution
 - In-repo eval scenario runner with scoreboard
+
+**Deferred target scope:**
+- Browser voice channel with Emotional Delivery
 - Voice demo page + operator console
+- Zendesk webhooks and real Zendesk end-to-end validation
+- Filmed voice demo and response-time target validation
 
 **Explicitly out of scope (non-goals):**
-- No telephony / phone numbers (voice is browser-based; ADR 0002, CONTEXT.md "Voice Channel")
-- No cloud deployment — deliverable is the repo plus a filmed demo (ADR 0006)
+- No telephony / phone numbers in the target voice design (ADR 0002, CONTEXT.md "Voice Channel")
+- No cloud deployment
 - No custom ticket UI in the current delivery
 - No claim of real Zendesk behavior until provider access is validated
 - No integration with Othram's real systems
@@ -56,9 +68,10 @@ resolved without escalation.
 
 ## 4. Architecture
 
-**One Agent Core, two channel adapters** (ADR 0002). All reasoning, tool use,
-escalation policy, and emotional judgment live in the shared core. Adapters
-translate I/O only.
+**Target architecture: one Agent Core, two channel adapters** (ADR 0002). All
+reasoning, tool use, escalation policy, and emotional judgment live in the
+shared core. The implemented current adapter is Local Ticket System only;
+voice remains deferred target scope.
 
 ```
                  ┌──────────────────────────────────────┐
@@ -82,13 +95,13 @@ translate I/O only.
                     └───────────┘  └──────────────┘        └─────────────┘
 ```
 
-**Vendors (two total):**
-- **OpenAI** — Agent Core model (GPT-class, tool calling) + `text-embedding-3-small` for KB embeddings
-- **ElevenLabs** — Scribe realtime STT + TTS (v3 model, inline audio tags)
+**Target vendors:**
+- **OpenAI** — optional live Agent Core model + `text-embedding-3-small` for developer seed embeddings
+- **ElevenLabs** — deferred Scribe realtime STT + TTS (v3 model, inline audio tags)
 
-**Stack:** TypeScript only (ADR 0003). Node/Fastify server (HTTP + WebSocket),
-React/Vite web app, Postgres + pgvector in docker-compose, Drizzle ORM,
-pnpm workspaces.
+**Stack:** TypeScript only (ADR 0003). Current delivery is a Node/Fastify HTTP
+server, React/Vite health-page scaffold, Postgres + pgvector in Docker Compose,
+Drizzle ORM, and pnpm workspaces. WebSocket voice is deferred target scope.
 
 ## 5. Components
 
@@ -136,7 +149,7 @@ pnpm workspaces.
   requester comment before execution. The verified-context, atomic handoff,
   retry, and terminal-state contract is specified in §6.4.
 
-### 5.3 Voice channel adapter (`server/src/channels/voice/`)
+### 5.3 Voice channel adapter (`server/src/channels/voice/`, deferred target)
 
 - WebSocket endpoint: browser mic audio in, agent audio out.
 - Pipeline: ElevenLabs Scribe realtime STT → Agent Core → annotated reply text →
@@ -180,7 +193,7 @@ status-level answers; anything beyond status requires the email on file.
 - **Grounding rule:** policy/process answers must come from retrieved passages;
   the reply carries the citation (e.g. "Media Permission Policy §1").
 
-### 5.6 Demo UI (`web/`)
+### 5.6 Demo UI (`web/`, deferred target)
 
 Two pages in one Vite/React app:
 
@@ -262,20 +275,18 @@ for the human-avoidance metric.
 ```
 /
 ├── server/          # Fastify: agent core, channel adapters, case system, KB, eval
-├── web/             # Vite/React: voice page + operator console
+├── web/             # Vite/React health-page scaffold; voice/operator console deferred
 ├── shared/          # shared types (events, tool calls)
 ├── docker-compose.yml  # Postgres + pgvector
 ├── CONTEXT.md       # domain glossary
 └── docs/adr/        # 0001–0008
 ```
 
-Current Local Ticket System run path: `docker compose up -d` →
-`pnpm db:migrate` → `pnpm seed` → `pnpm dev`.
-Run the current automated checks with `pnpm test`.
-
-Current vendor environment: `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`, and
-`ELEVENLABS_VOICE_ID`. Zendesk credentials and setup are future
-administrator-owned work gated by OTHRM-29, not current runtime requirements.
+The accepted provider-free Local Ticket System run path is the README’s named
+Compose setup → migration of explicit `EVAL_DATABASE_URL` → `pnpm eval`.
+`pnpm seed`, live `/api/chat`, and enabled local polling are optional OpenAI
+development paths; `pnpm seed` is not provider-free. ElevenLabs is deferred.
+Zendesk credentials and setup are future administrator-owned OTHRM-29 work.
 
 ## 9. Product acceptance scenario suite
 
@@ -295,7 +306,7 @@ deferred product scope.
 8. Angry email about a delay → empathetic escalation
 9. Customer with multiple cases → correct disambiguation
 
-**Voice scenarios:**
+**Deferred voice scenarios:**
 10. Status check → spoken computed timeline
 11. Angry caller → calm/quiet delivery (audio tags present), then escalation
 12. Caller makes a joke → slight chuckle in reply
@@ -307,16 +318,16 @@ grounding/citation presence, and redirect correctness.
 
 ## 10. Delivery
 
-Repo (README, this PRD, CONTEXT.md, ADRs, eval scoreboard output) plus a
-filmed demo of the voice page with the developer's own voice: angry-caller and
-joke scenarios on camera, emotion readout visible. No cloud deployment.
+Current delivery is the repo (README, this PRD, CONTEXT.md, ADRs, and local
+eval scoreboard output) with no cloud deployment. A filmed voice demo is
+deferred target scope and has no current proof.
 
 ## 11. Delivery sequence and backlog
 
 **Delivery sequence:** OTHRM-17 adds durable escalation execution through
 `TicketGateway`; OTHRM-31 packages the completed local ticket workflow.
 
-**Post-demo backlog:**
+**Deferred backlog:**
 
 - Real Zendesk adapter and end-to-end validation after provider access is restored
 - Braintrust-based evals/observability (dashboards, LLM-as-judge) — supersedes

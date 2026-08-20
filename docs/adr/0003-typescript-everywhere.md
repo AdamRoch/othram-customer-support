@@ -1,6 +1,13 @@
 # TypeScript everywhere, one app
 
-The entire build is TypeScript: a Node/Fastify server owning HTTP and WebSocket (voice audio), a React/Vite demo UI, and Postgres + Drizzle for the Case System. One language and one process model minimizes cross-language friction for the agentic build-out. Next.js was rejected because its serverless model fights long-lived WebSocket streams; a Python backend was rejected because a two-language build doubles the tooling and test surface.
+Status: Accepted architecture direction. The current provider-limited build is
+TypeScript with a Node/Fastify HTTP server, a minimal React/Vite health-page
+scaffold, and Postgres + Drizzle for the Local Ticket and Case Systems. The
+WebSocket voice ownership below is historical target architecture, not a
+current implementation claim. One language and one process model minimizes
+cross-language friction for the agentic build-out. Next.js was rejected because
+its serverless model fights long-lived WebSocket streams; a Python backend was
+rejected because a two-language build doubles the tooling and test surface.
 
 ## Considered Options
 
