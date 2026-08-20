@@ -279,6 +279,29 @@ export class AgentCore {
     this.hasKnowledgeSearch = this.tools.has('search_knowledge');
   }
 
+  /**
+   * Rehydrates a conversation from durable channel history.  Channel workers
+   * use this on every attempt; the web chat path continues to use in-memory
+   * continuity only.
+   */
+  restoreConversation(conversationId: string, messages: readonly AgentMessage[]): void {
+    if (!conversationId.trim()) throw new Error('conversationId must not be empty.');
+    if (messages.some((message) => !message.content.trim())) {
+      throw new Error('Restored conversation messages must not be empty.');
+    }
+    this.conversations.set(conversationId, messages.map((message) => ({ ...message })));
+  }
+
+  /** Run one turn from durable channel history without trusting prior process memory. */
+  async runTurnFromHistory(
+    message: string,
+    conversationId: string,
+    history: readonly AgentMessage[]
+  ): Promise<ChatResponse> {
+    this.restoreConversation(conversationId, history);
+    return this.runTurn(message, conversationId);
+  }
+
   async runTurn(message: string, conversationId?: string): Promise<ChatResponse> {
     const id = conversationId ?? this.createId();
     const previousTurn = this.conversationTails.get(id) ?? Promise.resolve();

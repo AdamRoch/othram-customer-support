@@ -2,6 +2,7 @@ import {
   bigserial,
   boolean,
   integer,
+  index,
   jsonb,
   pgEnum,
   pgTable,
@@ -86,7 +87,11 @@ export const localTicketComments = pgTable('local_ticket_comments', {
   isPublic: boolean('is_public').notNull(),
   body: text('body').notNull(),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
-});
+}, (table) => [
+  index('local_ticket_requester_public_ingest_cursor')
+    .on(table.ingestSequence)
+    .where(sql`${table.author} = 'requester' AND ${table.isPublic} = true`)
+]);
 
 export const localTicketIdempotency = pgTable(
   'local_ticket_idempotency',
@@ -100,4 +105,41 @@ export const localTicketIdempotency = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow()
   },
   (table) => [uniqueIndex('local_ticket_idempotency_ticket_key').on(table.ticketId, table.key)]
+);
+
+/** A named durable checkpoint for an inbound TicketGateway stream. */
+export const ticketIngestionCursors = pgTable('ticket_ingestion_cursors', {
+  name: text('name').primaryKey(),
+  cursor: text('cursor'),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+});
+
+/**
+ * The worker owns this state, while TicketGateway remains the authority for
+ * ticket content.  Text is stored before a gateway write so retrying a crash
+ * window uses the same idempotency key and never asks the model twice.
+ */
+export const ticketWorkItems = pgTable(
+  'ticket_work_items',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    // Gateway identifiers are opaque: this worker is not coupled to one provider's schema.
+    ticketId: text('ticket_id').notNull(),
+    inboundCommentId: text('inbound_comment_id').notNull(),
+    inboundCursor: text('inbound_cursor').notNull(),
+    queueOrder: bigserial('queue_order', { mode: 'bigint' }).notNull().unique(),
+    status: text('status').notNull().default('PENDING'),
+    leaseToken: uuid('lease_token'),
+    leaseExpiresAt: timestamp('lease_expires_at', { withTimezone: true }),
+    attempts: integer('attempts').notNull().default(0),
+    replyText: text('reply_text'),
+    replyIdempotencyKey: text('reply_idempotency_key').notNull(),
+    escalation: jsonb('escalation'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow()
+  },
+  (table) => [
+    uniqueIndex('ticket_work_items_ticket_comment').on(table.ticketId, table.inboundCommentId),
+    index('ticket_work_items_dispatch').on(table.status, table.ticketId, table.queueOrder)
+  ]
 );
