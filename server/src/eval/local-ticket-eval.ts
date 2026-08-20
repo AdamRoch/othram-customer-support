@@ -5,7 +5,13 @@ import { createLookupCaseTool } from '../agent-core/tools/lookup-case.js';
 import { createCaseTimelineRepository } from '../cases/repository.js';
 import { createTicketAgentCoreFactory } from '../channels/ticket/agent-core.js';
 import { LocalTicketGateway } from '../channels/ticket/local-ticket-gateway.js';
-import type { TicketActionOptions, TicketComment, TicketGateway, TicketThread } from '../channels/ticket/gateway.js';
+import type {
+  TicketActionOptions,
+  TicketComment,
+  TicketEscalation,
+  TicketGateway,
+  TicketThread
+} from '../channels/ticket/gateway.js';
 import { TicketPollingWorker } from '../channels/ticket/polling-worker.js';
 import type { createDatabase } from '../db/client.js';
 import {
@@ -184,6 +190,11 @@ class EvalOnlyTicketGateway implements TicketGateway {
     return this.delegate.updateTicket(ticketId, input);
   }
 
+  async applyEscalation(ticketId: string, input: TicketEscalation) {
+    this.requireAllowed(ticketId);
+    return this.delegate.applyEscalation(ticketId, input);
+  }
+
   private requireAllowed(ticketId: string): void {
     if (!this.allowedTicketIds.has(ticketId)) throw new Error(`Eval cannot access non-owned ticket ${ticketId}.`);
   }
@@ -234,7 +245,7 @@ async function cleanupEvalTickets(database: Database, ticketIds: string[], curso
 
 export async function runLocalTicketEval(options: RunLocalTicketEvalOptions): Promise<LocalTicketEvalResult> {
   const runId = randomUUID();
-  const caseNumber = `OTHRM-EVAL-${runId}`;
+  const caseNumber = `OTHRM-EVAL-${runId.toUpperCase()}`;
   const caseEmail = `eval.case+${runId}@othram-demo.test`;
   await seedEvalCase(options.database, caseNumber, caseEmail);
   const knowledgeSearch = await createEvalKnowledgeSearch();
@@ -262,7 +273,10 @@ export async function runLocalTicketEval(options: RunLocalTicketEvalOptions): Pr
     await worker.drain();
     const statusThread = await gateway.getTicket(statusTicket.id);
     const statusReplies = statusThread?.comments.filter((comment) => comment.author === 'agent' && comment.isPublic) ?? [];
-    const statusPassed = statusThread?.status === 'solved' && statusReplies.length === 1 && statusReplies[0]?.body.includes(caseNumber) === true;
+    const statusPassed = statusThread?.status === 'solved' && statusReplies.length === 1 &&
+      statusReplies[0]?.body.includes(caseNumber) === true &&
+      statusReplies[0]?.body.includes('currently in extraction') === true &&
+      statusReplies[0]?.body.includes('Based on the standard processing timeline') === true;
     scenarios.push({ name: 'case_status', passed: statusPassed, outcome: 'resolved' });
     if (options.failAfterScenario === 'case_status') throw new Error('Injected eval failure after case_status.');
 
@@ -281,9 +295,12 @@ export async function runLocalTicketEval(options: RunLocalTicketEvalOptions): Pr
     const technicalThread = await gateway.getTicket(technicalTicket.id);
     const internalNotes = technicalThread?.comments.filter((comment) => comment.author === 'agent' && !comment.isPublic) ?? [];
     const acknowledgments = technicalThread?.comments.filter((comment) => comment.author === 'agent' && comment.isPublic) ?? [];
+    const escalationNote = internalNotes.length === 1 ? JSON.parse(internalNotes[0]!.body) as Record<string, unknown> : undefined;
     const technicalPassed = technicalThread?.status === 'open' && technicalThread.team === 'Technical Team' &&
       technicalThread.tags.includes('ai-escalated') && technicalThread.tags.includes('ai-escalated:technical-problem') &&
-      internalNotes.length === 1 && acknowledgments.length === 1;
+      escalationNote?.reason === 'TECHNICAL_PROBLEM' && Array.isArray(escalationNote.conversation) &&
+      acknowledgments.length === 1 && acknowledgments[0]?.body ===
+        "I'm sorry this needs specialist review. I've routed your request to the appropriate Othram team for review.";
     scenarios.push({ name: 'dna_reprocessing', passed: technicalPassed, outcome: 'escalated' });
     if (options.failAfterScenario === 'dna_reprocessing') throw new Error('Injected eval failure after dna_reprocessing.');
 
