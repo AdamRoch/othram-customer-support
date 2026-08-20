@@ -268,6 +268,7 @@ describeWithDatabase('LocalTicketGateway', () => {
     }));
     const input = {
       idempotencyKey: `ticket:${ticket.id}:turn:turn-1:escalation`,
+      inboundCommentId: context.at(-1)!.commentId,
       turnId: 'turn-1',
       reason: 'BILLING_DISPUTE' as const,
       summary: 'Customer disputes a charge.',
@@ -289,7 +290,7 @@ describeWithDatabase('LocalTicketGateway', () => {
     const acknowledgments = escalated!.comments.filter((comment) => comment.isPublic && comment.author === 'agent');
     expect(notes).toHaveLength(1);
     expect(JSON.parse(notes[0]!.body)).toMatchObject({
-      type: 'ai_escalation', turnId: 'turn-1', reason: 'BILLING_DISPUTE',
+      type: 'ai_escalation', inboundCommentId: context.at(-1)!.commentId, turnId: 'turn-1', reason: 'BILLING_DISPUTE',
       summary: 'Customer disputes a charge.', team: 'Billing', conversation: context
     });
     expect(acknowledgments).toEqual([expect.objectContaining({
@@ -309,7 +310,8 @@ describeWithDatabase('LocalTicketGateway', () => {
       commentId: comment.id, author: comment.author, body: comment.body, createdAt: comment.createdAt
     }));
     await expect(gateway.applyEscalation(ticket.id, {
-      idempotencyKey: 'forced-failure', turnId: 'turn-failure', reason: 'CUSTOMER_REQUESTS_HUMAN',
+      idempotencyKey: 'forced-failure', inboundCommentId: context.at(-1)!.commentId,
+      turnId: 'turn-failure', reason: 'CUSTOMER_REQUESTS_HUMAN',
       summary: 'Customer asked for a person.', team: 'General Support', context
     })).rejects.toThrow('Failed query');
 
@@ -318,5 +320,67 @@ describeWithDatabase('LocalTicketGateway', () => {
     expect(after?.comments).toHaveLength(1);
     expect(await database.db.select().from(localTicketIdempotency)
       .where(sql`${localTicketIdempotency.ticketId} = ${ticket.id}`)).toHaveLength(0);
+  });
+
+  it('rejects context that does not exactly match the durable public prefix through the source inbound', async () => {
+    if (!database) throw new Error('TEST_DATABASE_URL was not configured.');
+    const gateway = new LocalTicketGateway(database.db);
+    const ticket = await createTicket('Initial public message.');
+    await gateway.addPublicReply(ticket.id, { message: 'Earlier public reply.', idempotencyKey: 'prefix-public' });
+    await gateway.addInternalNote(ticket.id, { message: 'Internal staff-only detail.', idempotencyKey: 'prefix-internal' });
+    const inbound = await gateway.addRequesterComment(ticket.id, {
+      message: 'Please escalate this request.', idempotencyKey: 'prefix-inbound'
+    });
+    const future = await gateway.addRequesterComment(ticket.id, {
+      message: 'This is a later requester update.', idempotencyKey: 'prefix-future'
+    });
+    const otherTicket = await gateway.createTicket({
+      requester: { name: 'Casey Smith', email: 'casey@othram-demo.test' },
+      subject: 'Other ticket', message: 'Other ticket request.'
+    });
+    const thread = (await gateway.getTicket(ticket.id))!;
+    const canonical = thread.comments
+      .slice(0, thread.comments.findIndex((comment) => comment.id === inbound.comment.id) + 1)
+      .filter((comment) => comment.isPublic)
+      .map((comment) => ({
+        commentId: comment.id, author: comment.author, body: comment.body, createdAt: comment.createdAt
+      }));
+    const internal = thread.comments.find((comment) => !comment.isPublic)!;
+    const futureComment = thread.comments.find((comment) => comment.id === future.comment.id)!;
+    const otherComment = otherTicket.comments[0]!;
+    const base = {
+      turnId: 'turn-verified-context', reason: 'CUSTOMER_REQUESTS_HUMAN' as const,
+      summary: 'Customer asked for a person.', team: 'General Support' as const
+    };
+    const invalidInputs = [
+      { inboundCommentId: inbound.comment.id, context: [...canonical, {
+        commentId: internal.id, author: internal.author, body: internal.body, createdAt: internal.createdAt
+      }] },
+      { inboundCommentId: inbound.comment.id, context: [...canonical, {
+        commentId: futureComment.id, author: futureComment.author, body: futureComment.body, createdAt: futureComment.createdAt
+      }] },
+      { inboundCommentId: otherComment.id, context: [{
+        commentId: otherComment.id, author: otherComment.author, body: otherComment.body, createdAt: otherComment.createdAt
+      }] },
+      { inboundCommentId: inbound.comment.id, context: [...canonical].reverse() },
+      { inboundCommentId: inbound.comment.id, context: canonical.map((message, index) =>
+        index === 0 ? { ...message, body: 'Altered body.' } : message) },
+      { inboundCommentId: inbound.comment.id, context: canonical.map((message, index) =>
+        index === 0 ? { ...message, createdAt: '2000-01-01T00:00:00.000Z' } : message) }
+    ];
+
+    for (const [index, invalid] of invalidInputs.entries()) {
+      await expect(gateway.applyEscalation(ticket.id, {
+        ...base,
+        ...invalid,
+        idempotencyKey: `malicious-context-${index}`
+      })).rejects.toThrow(/Escalation (context|inbound comment)/);
+    }
+
+    const after = await gateway.getTicket(ticket.id);
+    expect(after).toMatchObject({ status: 'open', team: null, tags: [] });
+    expect(after?.comments).toHaveLength(5);
+    expect(await database.db.select().from(localTicketIdempotency)
+      .where(sql`${localTicketIdempotency.ticketId} = ${ticket.id}`)).toHaveLength(4);
   });
 });

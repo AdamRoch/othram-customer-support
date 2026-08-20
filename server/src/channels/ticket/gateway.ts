@@ -52,6 +52,8 @@ export interface TicketEscalationContextMessage {
 }
 
 export interface TicketEscalation extends TicketActionOptions {
+  /** The public requester update which caused the Agent Core terminal turn. */
+  inboundCommentId: string;
   turnId: string;
   reason: EscalationReason;
   summary: string;

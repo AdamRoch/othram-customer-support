@@ -11,6 +11,7 @@ import {
 import {
   type TicketComment,
   type TicketEscalation,
+  type TicketEscalationContextMessage,
   type TicketEscalationResult,
   type TicketGateway,
   TicketGatewayIdempotencyConflictError,
@@ -305,6 +306,7 @@ export class LocalTicketGateway implements TicketGateway {
   }
 
   async applyEscalation(ticketId: string, input: TicketEscalation): Promise<TicketEscalationResult> {
+    const inboundCommentId = requireText(input.inboundCommentId, 'escalation inbound comment id');
     const turnId = requireText(input.turnId, 'turn id');
     const summary = requireText(input.summary, 'escalation summary');
     const team = requireTeam(input.team);
@@ -323,23 +325,29 @@ export class LocalTicketGateway implements TicketGateway {
       throw new Error('escalation context author must be requester or agent.');
     }
     const reasonTag = `ai-escalated:${reason.toLowerCase().replaceAll('_', '-')}`;
-    const internalNoteBody = JSON.stringify({
-      type: 'ai_escalation',
-      version: 1,
-      turnId,
-      reason,
-      summary,
-      team,
-      conversation: context
-    });
     const acknowledgmentMessage =
       "I'm sorry this needs specialist review. I've routed your request to the appropriate Othram team for review.";
 
     return this.idempotent(ticketId, input.idempotencyKey, {
-      operation: 'apply_escalation', turnId, reason, summary, team, context
+      operation: 'apply_escalation', inboundCommentId, turnId, reason, summary, team, context
     }, async (tx) => {
       const [existing] = await tx.select().from(localTickets).where(eq(localTickets.id, ticketId));
       if (!existing) throw new Error(`Local ticket ${ticketId} was not found.`);
+
+      const canonicalContext = await this.escalationContextForInbound(tx, ticketId, inboundCommentId);
+      if (!sameEscalationContext(context, canonicalContext)) {
+        throw new Error('Escalation context must match the durable public thread through its inbound comment.');
+      }
+      const internalNoteBody = JSON.stringify({
+        type: 'ai_escalation',
+        version: 1,
+        inboundCommentId,
+        turnId,
+        reason,
+        summary,
+        team,
+        conversation: canonicalContext
+      });
 
       await this.lockCommentSequence(tx);
       const [internalNote] = await tx
@@ -408,6 +416,32 @@ export class LocalTicketGateway implements TicketGateway {
     return toTicketThread(ticket, comments.map(toTicketComment));
   }
 
+  private async escalationContextForInbound(
+    tx: Transaction,
+    ticketId: string,
+    inboundCommentId: string
+  ): Promise<TicketEscalationContextMessage[]> {
+    const comments = await tx
+      .select()
+      .from(localTicketComments)
+      .where(eq(localTicketComments.ticketId, ticketId))
+      .orderBy(asc(localTicketComments.ingestSequence));
+    const inboundIndex = comments.findIndex((comment) => comment.id === inboundCommentId);
+    const inbound = comments[inboundIndex];
+    if (!inbound || inbound.author !== 'requester' || !inbound.isPublic) {
+      throw new Error(`Escalation inbound comment ${inboundCommentId} is not a public requester update for ticket ${ticketId}.`);
+    }
+    return comments.slice(0, inboundIndex + 1).flatMap((comment) => {
+      if (!comment.isPublic) return [];
+      return [{
+        commentId: comment.id,
+        author: toTicketComment(comment).author,
+        body: comment.body,
+        createdAt: comment.createdAt.toISOString()
+      }];
+    });
+  }
+
   private async idempotent<T>(
     ticketId: string,
     idempotencyKey: string,
@@ -435,4 +469,17 @@ export class LocalTicketGateway implements TicketGateway {
   private async lockCommentSequence(tx: Transaction): Promise<void> {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('local-ticket-cursor'), 1)`);
   }
+}
+
+function sameEscalationContext(
+  submitted: TicketEscalationContextMessage[],
+  canonical: TicketEscalationContextMessage[]
+): boolean {
+  return submitted.length === canonical.length && submitted.every((message, index) => {
+    const expected = canonical[index];
+    return message.commentId === expected?.commentId &&
+      message.author === expected.author &&
+      message.body === expected.body &&
+      message.createdAt === expected.createdAt;
+  });
 }

@@ -18,6 +18,7 @@ export type TicketWorkStatus =
   | 'ESCALATED';
 
 export interface TicketWorkEscalation {
+  inboundCommentId: string;
   turnId: string;
   reason: EscalationReason;
   summary: string;
@@ -90,8 +91,11 @@ function asWorkItem(row: Record<string, unknown>): TicketWorkerItem {
 function parseEscalation(value: unknown): TicketWorkEscalation | null {
   if (value === null || value === undefined) return null;
   if (typeof value !== 'object' || Array.isArray(value)) throw new Error('Persisted escalation must be an object.');
-  const { turnId, reason, summary, team, context } = value as Record<string, unknown>;
-  if (typeof turnId !== 'string' || !turnId.trim() || typeof summary !== 'string' || !summary.trim()) {
+  const { inboundCommentId, turnId, reason, summary, team, context } = value as Record<string, unknown>;
+  if (
+    typeof inboundCommentId !== 'string' || !inboundCommentId.trim() ||
+    typeof turnId !== 'string' || !turnId.trim() || typeof summary !== 'string' || !summary.trim()
+  ) {
     throw new Error('Persisted escalation has invalid turn details.');
   }
   if (typeof reason !== 'string' || !escalationReasons.includes(reason as EscalationReason)) {
@@ -109,6 +113,7 @@ function parseEscalation(value: unknown): TicketWorkEscalation | null {
     throw new Error('Persisted escalation has invalid conversation context.');
   }
   return {
+    inboundCommentId,
     turnId,
     reason: reason as EscalationReason,
     summary,
@@ -426,6 +431,7 @@ export class TicketPollingWorker {
       .set({
         status: 'ESCALATION_PENDING',
         escalation: {
+          inboundCommentId: item.inboundCommentId,
           turnId: event.turnId,
           reason: event.reason,
           summary: event.summary,
