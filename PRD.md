@@ -296,10 +296,14 @@ Repo (README, this PRD, CONTEXT.md, ADRs, eval scoreboard output) plus a
 filmed demo of the voice page with the developer's own voice: angry-caller and
 joke scenarios on camera, emotion readout visible. No cloud deployment.
 
-## 11. Backlog (post-demo, not in this build)
+## 11. Delivery sequence and backlog
+
+**Active delivery:** OTHRM-17 consumes the parked escalation work through
+`TicketGateway`, then OTHRM-31 packages the completed local ticket workflow.
+
+**Post-demo backlog:**
 
 - Real Zendesk adapter and end-to-end validation after provider access is restored
-- OTHRM-17 escalation delivery through `TicketGateway`
 - Braintrust-based evals/observability (dashboards, LLM-as-judge) — supersedes
   nothing; layers on top of the in-repo runner
 - Telephony (Twilio) as a third channel on the existing Voice pipeline
