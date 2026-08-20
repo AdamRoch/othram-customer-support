@@ -101,22 +101,25 @@ The evaluator uses a scripted model and a fixed local knowledge result, so it
 does not call either provider. It is evidence for this local workflow only.
 
 The script has created a runtime database too, so the server can be checked
-without an OpenAI key. In a second terminal using the same exports, run:
+without an OpenAI key. In the **original shell** that owns the exports, run the
+server in the foreground (all provider variables are explicitly blank):
 
 ```sh
-OPENAI_API_KEY= ELEVENLABS_API_KEY= LOCAL_TICKET_POLLING_ENABLED=false \
+OPENAI_API_KEY= ELEVENLABS_API_KEY= ELEVENLABS_VOICE_ID= \
+ZENDESK_SUBDOMAIN= ZENDESK_CLIENT_ID= ZENDESK_CLIENT_SECRET= \
+LOCAL_TICKET_POLLING_ENABLED=false \
 DATABASE_URL="$RUNTIME_DATABASE_URL" \
 pnpm --filter @othram/server dev
 ```
 
-Then, from the first terminal:
+Then, from a second terminal, run only:
 
 ```sh
 curl --fail http://127.0.0.1:3001/health
 ```
 
-Stop the server with Ctrl-C. The server proof explicitly leaves polling off and
-therefore does not call OpenAI.
+Return to the original shell and stop the server with Ctrl-C. The server proof
+explicitly leaves polling off and therefore does not call OpenAI.
 
 ## Full local verification
 
