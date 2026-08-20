@@ -3,10 +3,15 @@ import Fastify from 'fastify';
 import type {
   CaseTimelineNotFoundResponse,
   CaseTimelineResponse,
+  ChatErrorResponse,
+  ChatRequest,
+  ChatResponse,
   HealthResponse,
   KnowledgeSearchBadRequestResponse,
   KnowledgeSearchResponse
 } from '@othram/shared';
+import { AgentCore, ConversationNotFoundError } from './agent-core/core.js';
+import { createOpenAiAgentModel } from './agent-core/openai-model.js';
 import { createCaseTimelineRepository } from './cases/repository.js';
 import type { CaseTimelineRepository } from './cases/repository.js';
 import { computeCaseTimeline } from './cases/timeline.js';
@@ -18,8 +23,31 @@ import type { KnowledgeSearchService } from './knowledge/search.js';
 export interface BuildAppOptions {
   timelineRepository?: CaseTimelineRepository;
   knowledgeSearchService?: KnowledgeSearchService;
+  agentCore?: AgentCore;
   now?: () => Date;
   logger?: boolean;
+}
+
+function parseChatRequest(body: unknown): ChatRequest | null {
+  if (typeof body !== 'object' || body === null || Array.isArray(body)) {
+    return null;
+  }
+
+  const { message, conversationId } = body as Record<string, unknown>;
+  if (typeof message !== 'string' || !message.trim()) {
+    return null;
+  }
+  if (
+    conversationId !== undefined &&
+    (typeof conversationId !== 'string' || !conversationId.trim())
+  ) {
+    return null;
+  }
+
+  return {
+    message: message.trim(),
+    ...(conversationId === undefined ? {} : { conversationId })
+  };
 }
 
 export async function buildApp(options: BuildAppOptions = {}) {
@@ -38,6 +66,17 @@ export async function buildApp(options: BuildAppOptions = {}) {
     return knowledgeSearchService;
   };
   const now = options.now ?? (() => new Date());
+  let agentCore = options.agentCore;
+  const getAgentCore = () => {
+    if (!agentCore) {
+      const apiKey = process.env.OPENAI_API_KEY;
+      if (!apiKey) {
+        throw new Error('OPENAI_API_KEY is required to use the Agent Core.');
+      }
+      agentCore = new AgentCore(createOpenAiAgentModel(apiKey));
+    }
+    return agentCore;
+  };
 
   if (ownedDatabase) {
     app.addHook('onClose', async () => {
@@ -51,6 +90,33 @@ export async function buildApp(options: BuildAppOptions = {}) {
     status: 'ok',
     service: 'othram-support-server'
   }));
+
+  app.post<{ Body: unknown }>(
+    '/api/chat',
+    async (request, reply): Promise<ChatResponse | ChatErrorResponse> => {
+      const chatRequest = parseChatRequest(request.body);
+      if (!chatRequest) {
+        reply.code(400);
+        return {
+          error: 'INVALID_CHAT_REQUEST',
+          message: 'A non-empty message is required.'
+        };
+      }
+
+      try {
+        return await getAgentCore().runTurn(chatRequest.message, chatRequest.conversationId);
+      } catch (error) {
+        if (error instanceof ConversationNotFoundError) {
+          reply.code(404);
+          return {
+            error: 'CONVERSATION_NOT_FOUND',
+            message: error.message
+          };
+        }
+        throw error;
+      }
+    }
+  );
 
   app.get<{ Params: { caseNumber: string } }>(
     '/api/cases/:caseNumber/timeline',

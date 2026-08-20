@@ -1,4 +1,4 @@
-import 'dotenv/config';
+import '../env.js';
 import { createDatabase } from './client.js';
 import { knowledgeChunks } from './schema.js';
 import { createSeedData, stageDurationSeedData } from './seed-data.js';

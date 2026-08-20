@@ -8,7 +8,8 @@ escalating only when necessary. Spec: PRD.md. Domain glossary: CONTEXT.md. Decis
 
 ### Issue tracker
 
-Issues are tracked in OrbitTrack (local tracker at http://localhost:3000), scoped to project `OTHRM`. See `docs/agents/issue-tracker.md`.
+Issues are tracked in the hosted OrbitTrack at https://orbittrack.adamroch.com,
+scoped to project `OTHRM`. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
