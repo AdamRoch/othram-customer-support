@@ -56,10 +56,16 @@ The optional model override is documented in [`.env.example`](.env.example).
 
 The Local Ticket System stores Tickets and processing checkpoints in
 PostgreSQL. To have the running server process new requester comments, set
-`LOCAL_TICKET_POLLING_ENABLED=true`. The server polls immediately at startup
-and then uses `LOCAL_TICKET_POLL_INTERVAL_MS`, which defaults to 30 seconds.
-Each poll is non-overlapping, and server shutdown waits for the active poll
-before closing the database connection.
+`LOCAL_TICKET_POLLING_ENABLED=true` and provide `OPENAI_API_KEY`. The server
+polls immediately at startup and then uses `LOCAL_TICKET_POLL_INTERVAL_MS`,
+which defaults to 30 seconds. Each poll is non-overlapping, and server shutdown
+waits for the active poll before closing the database connection.
+
+The worker rebuilds Agent Core context from the Ticket's durable public thread,
+binds case lookup to the requester email stored on the Ticket, and persists a
+model reply before posting it and solving the Ticket. Retries are idempotent.
+Escalations are durably parked for OTHRM-17 instead of being delivered as
+replies or ticket-routing actions.
 
 This channel is local and provider-limited. It does not call Zendesk or prove
 Zendesk behavior.
