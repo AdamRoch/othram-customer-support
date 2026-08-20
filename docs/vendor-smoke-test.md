@@ -18,8 +18,10 @@ SMOKE_PLAY_AUDIO=1 pnpm smoke:vendors
 `SMOKE_PLAY_AUDIO=1` is intentional: the check renders the same sentence with
 `[calm]` and `[chuckles]`, plays each temporary clip locally, and fails if
 either render is missing or both renders are byte-identical. The spike keeps no
-audio response or ticket identifier. It creates one plainly labelled,
-disposable ticket in the developer-owned Zendesk trial.
+audio response or ticket identifier. After a read-only identity request
+succeeds, it creates and reads back exactly one plainly labelled, disposable
+ticket in the developer-owned Zendesk trial. It does not create a ticket when
+the identity request fails.
 
 ## Sanitized result — 2026-08-19
 
@@ -32,7 +34,7 @@ generated audio, or Zendesk ticket data.
 | OpenAI tool calling | PASS | The model returned a toy function call and completed a second turn after its tool result. |
 | ElevenLabs Scribe realtime | PASS | A Node WebSocket streamed generated PCM and received a nonempty committed transcript. |
 | ElevenLabs v3 TTS audio tags | FAIL | The configured voice was rejected before v3 could render or play the `[calm]` and `[chuckles]` comparison. Follow-up: OTHRM-30. |
-| Zendesk authenticated ticket create/read | FAIL | The client-credentials grant minted a token, but the read-only identity request returned HTTP 403, so no test ticket was created. Follow-up: OTHRM-29. |
+| Zendesk identity + ticket create/read | FAIL | The client-credentials grant minted a token, but the read-only identity request returned HTTP 403, so no test ticket was created. Real Zendesk validation remains blocked by the trial permissions. |
 
 OTHRM-10 remains blocked until the two provider setup issues are resolved and
 the command produces four passes.

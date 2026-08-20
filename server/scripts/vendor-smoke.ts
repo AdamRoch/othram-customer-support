@@ -10,6 +10,7 @@ import { execFile as execFileCallback } from 'node:child_process';
 import { readFile, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { promisify } from 'node:util';
 import {
   AudioFormat,
@@ -236,7 +237,7 @@ async function zendeskAccessToken(): Promise<string> {
   return payload.access_token;
 }
 
-async function checkZendeskTicket(): Promise<CheckResult> {
+export async function checkZendeskTicket(): Promise<CheckResult> {
   const subdomain = requiredEnv('ZENDESK_SUBDOMAIN');
   let accessToken = '';
   try {
@@ -307,6 +308,8 @@ async function main(): Promise<void> {
   }
 }
 
-void main().catch(() => {
-  process.exitCode = 1;
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  void main().catch(() => {
+    process.exitCode = 1;
+  });
+}
