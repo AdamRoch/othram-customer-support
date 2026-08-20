@@ -129,9 +129,9 @@ pnpm workspaces.
   the Ticket with stable idempotency keys. Durable leases and retryable work
   states cover concurrent workers, expiry, restart, and the delivery crash
   window without duplicate visible replies.
-- Uses bounded retry scheduling so a poison item cannot monopolize the queue
-  and sustained fresh traffic cannot starve retryable work. Work on the same
-  Ticket remains ordered.
+- Weights each retry attempt as 100 queue slots so a poison item cannot
+  monopolize the queue and sustained fresh traffic cannot starve retryable
+  work. Work on the same Ticket remains ordered.
 - Persists escalations as pending work for OTHRM-17; this channel does not yet
   deliver the acknowledgment, internal note, tags, assignment, or open status.
 
