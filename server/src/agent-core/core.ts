@@ -169,10 +169,15 @@ function createReplyTool(): AgentTool {
 
 function assertReplyMeetsRequirements(
   message: string,
-  requirements: ReadonlyArray<ReplyRequirement>
+  requirements: ReadonlyArray<ReplyRequirement>,
+  requiresKnowledgeGrounding: boolean
 ): void {
+  if (requiresKnowledgeGrounding && requirements.length === 0) {
+    throw new Error('A Customer-facing reply requires a completed knowledge search.');
+  }
+
   for (const requirement of requirements) {
-    if (requirement.requiredMessage && !message.includes(requirement.requiredMessage)) {
+    if (requirement.requiredMessage && message !== requirement.requiredMessage) {
       throw new Error('A knowledge search with no results requires the honest no-results response.');
     }
 
@@ -215,6 +220,7 @@ export class AgentCore {
   private readonly conversations = new Map<string, AgentMessage[]>();
   private readonly conversationTails = new Map<string, Promise<void>>();
   private readonly tools: Map<string, AgentTool>;
+  private readonly requiresKnowledgeGrounding: boolean;
 
   constructor(
     private readonly model: AgentModel,
@@ -232,6 +238,7 @@ export class AgentCore {
     this.tools = new Map(
       [createReplyTool(), createEscalateTool(), ...tools].map((tool) => [tool.definition.name, tool])
     );
+    this.requiresKnowledgeGrounding = this.tools.has('search_knowledge');
   }
 
   async runTurn(message: string, conversationId?: string): Promise<ChatResponse> {
@@ -314,6 +321,9 @@ export class AgentCore {
         const escalationArguments =
           call.name === 'escalate' ? parseEscalationArguments(argumentsValue) : undefined;
         const result = await tool.execute(argumentsValue);
+        const mustDeliverRequiredMessage = replyRequirements.some(
+          (requirement) => requirement.requiredMessage !== undefined
+        );
         const automaticEscalationReason =
           replyArguments?.emotionalState === 'FRUSTRATED'
             ? 'CUSTOMER_FRUSTRATED'
@@ -375,6 +385,16 @@ export class AgentCore {
             throw new Error('Agent Core received multiple reply tool calls in one step.');
           }
           if (automaticEscalationReason) {
+            if (mustDeliverRequiredMessage) {
+              replyMessage = result.reply;
+              events.push({
+                type: 'reply_created',
+                conversationId: id,
+                turnId,
+                sequence: events.length,
+                message: result.reply
+              });
+            }
             escalated = true;
             events.push({
               type: 'escalated',
@@ -405,7 +425,11 @@ export class AgentCore {
 
       if (replyMessage !== undefined || escalated) {
         if (replyMessage !== undefined) {
-          assertReplyMeetsRequirements(replyMessage, replyRequirements);
+          assertReplyMeetsRequirements(
+            replyMessage,
+            replyRequirements,
+            this.requiresKnowledgeGrounding
+          );
         }
         this.conversations.set(id, [
           ...messages,

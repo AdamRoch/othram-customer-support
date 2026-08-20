@@ -32,7 +32,7 @@ generated audio, or Zendesk ticket data.
 | OpenAI tool calling | PASS | The model returned a toy function call and completed a second turn after its tool result. |
 | ElevenLabs Scribe realtime | PASS | A Node WebSocket streamed generated PCM and received a nonempty committed transcript. |
 | ElevenLabs v3 TTS audio tags | FAIL | The configured voice was rejected before v3 could render or play the `[calm]` and `[chuckles]` comparison. Follow-up: OTHRM-30. |
-| Zendesk authenticated ticket create/read | FAIL | The trial rejected the client-credentials grant, so no test ticket was created. Follow-up: OTHRM-29. |
+| Zendesk authenticated ticket create/read | FAIL | The client-credentials grant minted a token, but the read-only identity request returned HTTP 403, so no test ticket was created. Follow-up: OTHRM-29. |
 
 OTHRM-10 remains blocked until the two provider setup issues are resolved and
 the command produces four passes.

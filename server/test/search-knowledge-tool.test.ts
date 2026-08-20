@@ -157,6 +157,42 @@ describe('search_knowledge Agent Tool', () => {
     );
   });
 
+  it('fails closed if the model replies without searching', async () => {
+    const core = new AgentCore(
+      {
+        async generate() {
+          return {
+            responseId: 'response-reply',
+            outputText: '',
+            toolCalls: [
+              {
+                callId: 'reply-call',
+                name: 'reply',
+                arguments: JSON.stringify({
+                  message: 'You may use the photo.',
+                  confidence: 0.9,
+                  emotionalState: 'NEUTRAL'
+                })
+              }
+            ]
+          };
+        }
+      },
+      sequentialIds('conversation-1', 'turn-1'),
+      [
+        createSearchKnowledgeTool({
+          async search() {
+            return [];
+          }
+        })
+      ]
+    );
+
+    await expect(core.runTurn('Can I use an Othram photo?')).rejects.toThrow(
+      'reply requires a completed knowledge search'
+    );
+  });
+
   it('returns an honest specialist offer when retrieval has no results', async () => {
     const core = new AgentCore(
       modelThatSearchesThenReplies(KNOWLEDGE_NO_RESULTS_MESSAGE),
@@ -183,6 +219,77 @@ describe('search_knowledge Agent Tool', () => {
           }
         })
       ])
+    });
+  });
+
+  it('requires the no-results specialist offer verbatim', async () => {
+    const core = new AgentCore(
+      modelThatSearchesThenReplies(`${KNOWLEDGE_NO_RESULTS_MESSAGE} Is there anything else?`),
+      sequentialIds('conversation-1', 'turn-1'),
+      [
+        createSearchKnowledgeTool({
+          async search() {
+            return [];
+          }
+        })
+      ]
+    );
+
+    await expect(core.runTurn('What is the policy for an unknown process?')).rejects.toThrow(
+      'requires the honest no-results response'
+    );
+  });
+
+  it('delivers the no-results offer while preserving automatic escalation', async () => {
+    let calls = 0;
+    const core = new AgentCore(
+      {
+        async generate() {
+          calls += 1;
+          return calls === 1
+            ? {
+                responseId: 'response-search',
+                outputText: '',
+                toolCalls: [
+                  {
+                    callId: 'search-call',
+                    name: 'search_knowledge',
+                    arguments: '{"query":"unknown policy"}'
+                  }
+                ]
+              }
+            : {
+                responseId: 'response-reply',
+                outputText: '',
+                toolCalls: [
+                  {
+                    callId: 'reply-call',
+                    name: 'reply',
+                    arguments: JSON.stringify({
+                      message: KNOWLEDGE_NO_RESULTS_MESSAGE,
+                      confidence: 0.1,
+                      emotionalState: 'FRUSTRATED'
+                    })
+                  }
+                ]
+              };
+        }
+      },
+      sequentialIds('conversation-1', 'turn-1'),
+      [
+        createSearchKnowledgeTool({
+          async search() {
+            return [];
+          }
+        })
+      ]
+    );
+
+    const result = await core.runTurn('What is the policy for an unknown process?');
+
+    expect(result.reply).toBe(KNOWLEDGE_NO_RESULTS_MESSAGE);
+    expect(result.events.find((event) => event.type === 'escalated')).toMatchObject({
+      reason: 'CUSTOMER_FRUSTRATED'
     });
   });
 });
