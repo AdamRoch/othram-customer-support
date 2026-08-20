@@ -194,10 +194,17 @@ Ticket-side UI: none in the current provider-limited delivery.
 
 ### 5.7 Eval runner (`server/src/eval/`)
 
-- `pnpm eval` runs scripted conversations against the real Agent Core with the
-  seeded Case System, asserts outcomes, prints a scoreboard headlined by human
-  avoidance rate.
-- Scenario suite in §9 is the acceptance bar.
+- `pnpm eval` requires a dedicated `EVAL_DATABASE_URL` and runs scripted Local
+  Ticket conversations through `LocalTicketGateway`, the polling worker, the
+  real Agent Core, case timeline lookup, knowledge search, and escalation
+  paths. Deterministic local model and search implementations keep the run
+  provider-free; it does not call OpenAI or Zendesk.
+- The current runner covers case status, photo permission, and DNA
+  reprocessing. It runs the same suite twice, requires identical scoreboards,
+  limits durable claims to its fixture Tickets, and removes its exact fixtures
+  on success or failure.
+- Its human-avoidance result is local-eval evidence only, not production
+  performance. The remaining product acceptance scenarios in §9 are deferred.
 
 ## 6. Behavioral policy
 
@@ -270,10 +277,12 @@ Current vendor environment: `OPENAI_API_KEY`, `ELEVENLABS_API_KEY`, and
 `ELEVENLABS_VOICE_ID`. Zendesk credentials and setup are future
 administrator-owned work gated by OTHRM-29, not current runtime requirements.
 
-## 9. Acceptance — eval scenario suite
+## 9. Product acceptance scenario suite
 
-Every scenario asserts the outcome end-to-end. This suite *is* the acceptance
-bar, mapping 1:1 to the brief's use cases and evaluation criteria.
+The full product acceptance bar maps 1:1 to the brief's use cases and
+evaluation criteria. The current deterministic provider-free runner implements
+Ticket scenarios 1, 2, and 4; the other Ticket and Voice scenarios remain
+deferred product scope.
 
 **Ticket scenarios:**
 1. Case status ("sent it last Thursday") → resolved, computed timeline
@@ -292,8 +301,9 @@ bar, mapping 1:1 to the brief's use cases and evaluation criteria.
 12. Caller makes a joke → slight chuckle in reply
 13. Off-topic voice request → polite redirect
 
-**Scoreboard:** human avoidance rate, per-scenario pass/fail, routing
-correctness, grounding/citation presence, redirect correctness.
+**Current scoreboard:** local-eval-only human avoidance rate and per-scenario
+pass/fail with outcome. The full suite will also report routing correctness,
+grounding/citation presence, and redirect correctness.
 
 ## 10. Delivery
 

@@ -31,6 +31,10 @@ the same identities after real provider access is validated.
 | Jamie Patel | `jamie.patel@othram-demo.test` | OTH-2026-0156 |
 | Taylor Reed | `taylor.reed@othram-demo.test` | OTH-2026-0157 |
 
-Standard stage durations live in
+Standard stage durations are defined in
 [`server/src/db/seed-data.ts`](../server/src/db/seed-data.ts), consistent with
-[ADR 0004](adr/0004-timelines-computed-not-generated.md).
+[ADR 0004](adr/0004-timelines-computed-not-generated.md). The versioned
+[`0005_stage-duration-defaults.sql`](../server/drizzle/0005_stage-duration-defaults.sql)
+migration bootstraps those canonical values. Apply migrations before the seed
+command or deterministic local evaluation; the evaluator fails closed if the
+stored values are missing or changed.
