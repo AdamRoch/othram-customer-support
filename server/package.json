@@ -9,6 +9,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "db:migrate": "tsx src/db/migrate.ts",
     "seed": "tsx src/db/seed.ts",
+    "eval": "tsx src/eval/index.ts",
     "smoke:vendors": "tsx scripts/vendor-smoke.ts",
     "typecheck:smoke": "tsc --noEmit -p tsconfig.smoke.json",
     "test": "vitest run --fileParallelism=false"

@@ -90,6 +90,23 @@ to `.env` or export `DATABASE_URL` to use a different database. The server
 checks this connection during boot and exits with an actionable error if it is
 unavailable.
 
+`pnpm eval` is deliberately separate from the running Local Ticket System. Set
+`EVAL_DATABASE_URL` to a dedicated PostgreSQL database whose name contains
+`eval`, then apply migrations and run the three-scenario local evaluation:
+
+```sh
+DATABASE_URL="$EVAL_DATABASE_URL" pnpm db:migrate
+pnpm eval
+```
+
+The evaluator refuses to fall back to `DATABASE_URL`. It uses deterministic
+local model and search implementations, so it does not require or call OpenAI
+or Zendesk. It runs the case-status, photo-permission, and DNA-reprocessing
+scenarios twice, requires identical scoreboards, and reports human avoidance
+as local-eval evidence rather than production performance. Each run limits
+durable work to its own fixture Tickets and removes its exact fixtures on
+success or failure.
+
 To confirm pgvector is enabled or reset the local database:
 
 ```sh

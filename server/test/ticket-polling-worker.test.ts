@@ -144,6 +144,107 @@ describeWithDatabase('TicketPollingWorker', () => {
     expect(await restarted.pollOnce()).toMatchObject({ enqueued: 0 });
   });
 
+  it('never leases work outside a configured claim scope', async () => {
+    if (!database) throw new Error('TEST_DATABASE_URL was not configured.');
+    const { worker, gateway, ticket } = await setup();
+    const pendingTicket = await gateway.createTicket({
+      requester: { name: 'Pending Requester', email: 'pending@othram-demo.test' },
+      subject: 'Pending work', message: 'Pending work must be preserved.'
+    });
+    const escalationTicket = await gateway.createTicket({
+      requester: { name: 'Escalation Requester', email: 'escalation@othram-demo.test' },
+      subject: 'Escalation work', message: 'Escalation work must be preserved.'
+    });
+    const expiredTicket = await gateway.createTicket({
+      requester: { name: 'Expired Requester', email: 'expired@othram-demo.test' },
+      subject: 'Expired work', message: 'Expired work must be preserved.'
+    });
+    await worker.pollOnce();
+    const allWork = await database.db.select().from(ticketWorkItems);
+    const workFor = (ticketId: string) => {
+      const item = allWork.find((candidate) => candidate.ticketId === ticketId);
+      if (!item) throw new Error(`Missing work for ${ticketId}.`);
+      return item;
+    };
+    await database.db.update(ticketWorkItems).set({
+      status: 'ESCALATION_PENDING',
+      escalation: {
+        inboundCommentId: workFor(escalationTicket.id).inboundCommentId,
+        turnId: 'scope-escalation-turn',
+        reason: 'TECHNICAL_PROBLEM',
+        summary: 'Scope test escalation.',
+        team: 'Technical Team',
+        context: []
+      }
+    }).where(eq(ticketWorkItems.id, workFor(escalationTicket.id).id));
+    await database.db.update(ticketWorkItems).set({
+      status: 'LEASED',
+      leaseToken: '00000000-0000-4000-8000-000000000001',
+      leaseExpiresAt: new Date('2000-01-01T00:00:00.000Z'),
+      attempts: 4
+    }).where(eq(ticketWorkItems.id, workFor(expiredTicket.id).id));
+    const protectedRows = await Promise.all([pendingTicket, escalationTicket, expiredTicket].map(async (protectedTicket) => {
+      const [row] = await database.db.select().from(ticketWorkItems)
+        .where(eq(ticketWorkItems.ticketId, protectedTicket.id));
+      if (!row) throw new Error(`Missing protected work for ${protectedTicket.id}.`);
+      return row;
+    }));
+
+    const scopedWorker = new TicketPollingWorker({
+      database: database.db,
+      gateway,
+      createAgentCore: () => new AgentCore(new ReplyModel()),
+      claimTicketIds: () => [ticket.id]
+    });
+    expect(await scopedWorker.processOne()).toBe('REPLIED');
+    const after = await Promise.all(protectedRows.map(async (row) => {
+      const [current] = await database.db.select().from(ticketWorkItems).where(eq(ticketWorkItems.id, row.id));
+      return current;
+    }));
+    expect(after).toEqual(protectedRows);
+    for (const protectedTicket of [pendingTicket, escalationTicket, expiredTicket]) {
+      expect((await gateway.getTicket(protectedTicket.id))?.comments.filter((comment) => comment.author === 'agent')).toHaveLength(0);
+    }
+  });
+
+  it('fails closed for an empty claim scope and rejects blank ticket IDs', async () => {
+    if (!database) throw new Error('TEST_DATABASE_URL was not configured.');
+    const { worker, gateway, ticket } = await setup();
+    await worker.pollOnce();
+    const [before] = await database.db.select().from(ticketWorkItems).where(eq(ticketWorkItems.ticketId, ticket.id));
+    if (!before) throw new Error('Expected a queued ticket work item.');
+    const emptyScope = new TicketPollingWorker({
+      database: database.db, gateway, createAgentCore: () => new AgentCore(new ReplyModel()), claimTicketIds: () => []
+    });
+    await expect(emptyScope.processOne()).resolves.toBeNull();
+    expect((await database.db.select().from(ticketWorkItems).where(eq(ticketWorkItems.id, before.id)))[0]).toEqual(before);
+    const invalidScope = new TicketPollingWorker({
+      database: database.db, gateway, createAgentCore: () => new AgentCore(new ReplyModel()), claimTicketIds: () => ['  ']
+    });
+    await expect(invalidScope.processOne()).rejects.toThrow('only non-blank ticket IDs');
+  });
+
+  it('keeps concurrent disjoint claim scopes on their own tickets', async () => {
+    if (!database) throw new Error('TEST_DATABASE_URL was not configured.');
+    const { worker, gateway, ticket } = await setup();
+    const otherTicket = await gateway.createTicket({
+      requester: { name: 'Other Requester', email: 'other@othram-demo.test' },
+      subject: 'Other ticket', message: 'Process only in the other scope.'
+    });
+    await worker.pollOnce();
+    const first = new TicketPollingWorker({
+      database: database.db, gateway, createAgentCore: () => new AgentCore(new ReplyModel()), claimTicketIds: () => [ticket.id]
+    });
+    const second = new TicketPollingWorker({
+      database: database.db, gateway, createAgentCore: () => new AgentCore(new ReplyModel()), claimTicketIds: () => [otherTicket.id]
+    });
+    expect(await Promise.all([first.processOne(), second.processOne()])).toEqual(['REPLIED', 'REPLIED']);
+    expect((await gateway.getTicket(ticket.id))?.comments.filter((comment) => comment.author === 'agent' && comment.isPublic))
+      .toHaveLength(1);
+    expect((await gateway.getTicket(otherTicket.id))?.comments.filter((comment) => comment.author === 'agent' && comment.isPublic))
+      .toHaveLength(1);
+  });
+
   it('uses queue order, not lexical provider cursors, for more than nine updates', async () => {
     const { worker, ticket, gateway } = await setup();
     for (let index = 2; index <= 11; index += 1) {
