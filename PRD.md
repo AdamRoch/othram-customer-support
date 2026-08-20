@@ -3,14 +3,19 @@
 - Version: 1.0
 - Status: Approved (design complete via structured grilling session)
 - Source brief: `othram-csa-project.md`
-- Domain glossary: `CONTEXT.md` · Decisions: `docs/adr/0001–0006`
+- Domain glossary: `CONTEXT.md` · Decisions: `docs/adr/0001–0008`
 
 ## 1. Overview
 
 An AI-powered customer support agent for Othram (forensic genomics), built as a
 challenger-project demo. The agent resolves customer inquiries autonomously
-across two channels — **Zendesk tickets** and a **browser voice interface** —
+across two channels — **Local Ticket System Tickets** and a **browser voice interface** —
 and escalates to humans only when necessary.
+
+ADR 0008 updates the current delivery boundary because the Zendesk trial cannot
+perform Ticketing operations. The original real-Zendesk design remains the
+future target, but current ticket behavior and evidence come only from the
+provider-neutral `TicketGateway` and its durable PostgreSQL implementation.
 
 The killer feature is **Emotional Delivery** on the voice channel: the agent
 modulates its spoken voice in response to the customer's emotional state —
@@ -33,18 +38,19 @@ resolved without escalation.
 ## 3. Scope
 
 **In scope:**
-- Real Zendesk integration against a developer-owned trial instance (ADR 0001)
+- Durable Local Ticket System behind the provider-neutral `TicketGateway` (ADR 0008)
 - Simulated Case System (local, seeded, behind an interface)
 - Browser voice channel with Emotional Delivery
 - Knowledge base with grounded (cited) answers
-- Escalation with full Zendesk routing mechanics
+- Escalation with ticket tags, exact team assignment, status, and internal notes
 - In-repo eval scenario runner with scoreboard
 - Voice demo page + operator console
 
 **Explicitly out of scope (non-goals):**
 - No telephony / phone numbers (voice is browser-based; ADR 0002, CONTEXT.md "Voice Channel")
 - No cloud deployment — deliverable is the repo plus a filmed demo (ADR 0006)
-- No custom ticket UI — Zendesk's native agent workspace is the ticket-side UI
+- No custom ticket UI in the current delivery
+- No claim of real Zendesk behavior until provider access is validated
 - No integration with Othram's real systems
 - No real authentication — lightweight identity rules only (§5.5)
 
@@ -56,7 +62,7 @@ translate I/O only.
 
 ```
                  ┌──────────────────────────────────────┐
- Zendesk ──────► │ Ticket adapter (poll + webhook)      │──┐
+ Local Ticket ─►│ Ticket adapter (cursor polling)      │──┐
                  └──────────────────────────────────────┘  │
                                                            ▼
                  ┌──────────────────────────────────────┐  ┌─────────────┐
@@ -70,9 +76,9 @@ translate I/O only.
                     lookup_case    search_knowledge           escalate      reply
                           │               │                       │
                     ┌───────────┐  ┌──────────────┐        ┌─────────────┐
-                    │ Case      │  │ Knowledge    │        │ Zendesk     │
-                    │ System    │  │ Base         │        │ routing     │
-                    │ (Postgres)│  │ (pgvector)   │        │ mechanics   │
+                    │ Case      │  │ Knowledge    │        │ Ticket      │
+                    │ System    │  │ Base         │        │ actions     │
+                    │ (Postgres)│  │ (pgvector)   │        │ via gateway │
                     └───────────┘  └──────────────┘        └─────────────┘
 ```
 
@@ -103,15 +109,12 @@ pnpm workspaces.
 
 ### 5.2 Ticket channel adapter (`server/src/channels/ticket/`)
 
-- **Authentication:** the server exchanges the confidential OAuth client's ID
-  and secret through Zendesk's OAuth 2.0 client credentials flow. Short-lived
-  access tokens stay in process memory only, are never exposed to the browser or
-  logs, and are replaced by a new client credentials exchange before expiry.
-- **Ingestion:** polls Zendesk's incremental ticket API every ~30s with a cursor
-  (default; meets the 5-minute response target); also exposes a webhook receiver
-  endpoint for real-time push when a public URL is configured. Both paths funnel
-  into one `ingestTicket` function.
-- **Customer identity:** matches the Zendesk requester email to a Customer in the
+- **Provider boundary:** ticket workflows depend on `TicketGateway`. The current
+  adapter is the durable PostgreSQL Local Ticket System; Zendesk is a future
+  adapter after provider access is validated.
+- **Ingestion:** reads public requester comments through a restart-safe monotonic
+  cursor. Agent replies and internal notes never enter the requester stream.
+- **Customer identity:** matches the Ticket requester email to a Customer in the
   Case System.
 - **Actions:** post public reply, post internal note, set tags, assign group,
   set status, resolve ticket.
@@ -171,7 +174,7 @@ Two pages in one Vite/React app:
 - **Operator console:** read-only live stream of agent events per conversation —
   tool calls, KB citations, confidence scores, escalation events with reasons.
 
-Ticket-side UI: none — Zendesk's native agent workspace is used as-is.
+Ticket-side UI: none in the current provider-limited delivery.
 
 ### 5.7 Eval runner (`server/src/eval/`)
 
@@ -206,7 +209,7 @@ confidence (below a single tunable threshold — the "escalation balance" dial).
 - **Untrusted input:** customer text is data, not instructions; embedded
   instructions in tickets/transcripts are ignored.
 
-### 6.4 Escalation mechanics (Zendesk)
+### 6.4 Escalation mechanics (TicketGateway)
 
 On `escalate(reason, summary, team)`: internal note with structured summary +
 conversation context → assign to group (`Technical Team` / `Billing` /
@@ -219,12 +222,12 @@ auditable event feeding the human-avoidance metric.
 - **Cases:** 15–20 spread across every stage, including: one submitted "last
   Thursday" (the brief's status scenario), a delayed case, a delivered case, a
   customer with multiple cases, an evidence-insufficient case.
-- **Customers:** matched to seed cases, with emails usable from the Zendesk side.
+- **Customers:** matched to seed cases, with emails usable by the Local Ticket System.
 - **Stage durations:** realistic standard durations per stage.
 - **KB docs:** the 15–20 documents in §5.5, embedded at seed time.
-- **Zendesk provisioning:** `pnpm zendesk:setup` creates the groups
-  (`Technical Team`, `Billing`, `General Support`), tags, and any macros via
-  the Zendesk API.
+- **Ticket routing:** the Local Ticket System accepts only `Technical Team`,
+  `Billing`, or `General Support`; a future Zendesk adapter must map these values
+  only after real provider access is validated.
 
 ## 8. Repo layout and local run
 
@@ -277,6 +280,7 @@ joke scenarios on camera, emotion readout visible. No cloud deployment.
 
 ## 11. Backlog (post-demo, not in this build)
 
+- Real Zendesk adapter and end-to-end validation after provider access is restored
 - Braintrust-based evals/observability (dashboards, LLM-as-judge) — supersedes
   nothing; layers on top of the in-repo runner
 - Telephony (Twilio) as a third channel on the existing Voice pipeline

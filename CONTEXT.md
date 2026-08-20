@@ -1,6 +1,6 @@
 # Othram AI Support Agent
 
-An AI-powered customer support agent demo for Othram (forensic genomics), delivered as a challenger project. It answers customer inquiries through Zendesk tickets and a voice channel, resolving autonomously where possible and escalating to humans otherwise.
+An AI-powered customer support agent demo for Othram (forensic genomics), delivered as a challenger project. In the current provider-limited delivery, it answers customer inquiries through the Local Ticket System and a voice channel, resolving autonomously where possible and escalating to humans otherwise. Real Zendesk integration remains a future, unresolved provider integration.
 
 ## Language
 

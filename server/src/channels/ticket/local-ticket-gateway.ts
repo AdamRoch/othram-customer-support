@@ -12,6 +12,7 @@ import {
   type TicketGateway,
   TicketGatewayIdempotencyConflictError,
   type TicketStatus,
+  type TicketTeam,
   type TicketThread
 } from './gateway.js';
 
@@ -35,6 +36,22 @@ function requireText(value: string, field: string): string {
   const trimmed = value.trim();
   if (!trimmed) throw new Error(`${field} must not be empty.`);
   return trimmed;
+}
+
+function requireStatus(value: unknown): TicketStatus | undefined {
+  if (value === undefined) return undefined;
+  if (value !== 'open' && value !== 'pending' && value !== 'solved') {
+    throw new Error('status must be open, pending, or solved.');
+  }
+  return value;
+}
+
+function requireTeam(value: unknown): TicketTeam | null | undefined {
+  if (value === undefined || value === null) return value;
+  if (value !== 'Technical Team' && value !== 'Billing' && value !== 'General Support') {
+    throw new Error('team must be Technical Team, Billing, General Support, or null.');
+  }
+  return value;
 }
 
 function stableJson(value: unknown): string {
@@ -72,9 +89,9 @@ function toTicketComment(row: {
 }
 
 function toTicketThread(ticket: TicketRow, comments: TicketComment[]): TicketThread {
-  if (ticket.status !== 'open' && ticket.status !== 'pending' && ticket.status !== 'solved') {
-    throw new Error(`Unsupported local ticket status: ${ticket.status}`);
-  }
+  const status = requireStatus(ticket.status);
+  const team = requireTeam(ticket.team);
+  if (!status || team === undefined) throw new Error('Stored local ticket fields are invalid.');
   return {
     id: ticket.id,
     subject: ticket.subject,
@@ -83,8 +100,8 @@ function toTicketThread(ticket: TicketRow, comments: TicketComment[]): TicketThr
       name: ticket.requesterName,
       email: ticket.requesterEmail
     },
-    status: ticket.status,
-    team: ticket.team,
+    status,
+    team,
     tags: ticket.tags,
     createdAt: ticket.createdAt.toISOString(),
     updatedAt: ticket.updatedAt.toISOString(),
@@ -155,7 +172,7 @@ export class LocalTicketGateway implements TicketGateway {
         })
       }))
     );
-    const nextCursor = rows.length > limit && page.at(-1) ? page.at(-1)!.ingestSequence.toString() : null;
+    const nextCursor = page.at(-1)?.ingestSequence.toString() ?? input.cursor ?? null;
     return { updates, nextCursor };
   }
 
@@ -190,6 +207,7 @@ export class LocalTicketGateway implements TicketGateway {
         .values({ requesterId: requester.id, subject })
         .returning();
       if (!ticket) throw new Error('Could not create local ticket.');
+      await this.lockCommentSequence(tx);
       await tx.insert(localTicketComments).values({
         ticketId: ticket.id,
         author: 'requester',
@@ -208,18 +226,35 @@ export class LocalTicketGateway implements TicketGateway {
 
   async addRequesterComment(ticketId: string, input: { message: string; idempotencyKey: string }) {
     const message = requireText(input.message, 'message');
-    const comment = await this.idempotent(ticketId, input.idempotencyKey, { operation: 'requester_comment', message }, async (tx) => {
+    return this.idempotent(ticketId, input.idempotencyKey, { operation: 'requester_comment', message }, async (tx) => {
+      await this.lockCommentSequence(tx);
       const [created] = await tx
         .insert(localTicketComments)
         .values({ ticketId, author: 'requester', isPublic: true, body: message })
         .returning();
       if (!created) throw new Error('Could not create local requester comment.');
-      await tx.update(localTickets).set({ updatedAt: new Date() }).where(eq(localTickets.id, ticketId));
-      return { cursor: created.ingestSequence.toString(), comment: toTicketComment(created) };
+      const [ticket] = await tx
+        .update(localTickets)
+        .set({ updatedAt: new Date() })
+        .where(eq(localTickets.id, ticketId))
+        .returning();
+      if (!ticket) throw new Error(`Local ticket ${ticketId} was not found.`);
+      const [requester] = await tx
+        .select()
+        .from(localTicketRequesters)
+        .where(eq(localTicketRequesters.id, ticket.requesterId));
+      if (!requester) throw new Error(`Requester for local ticket ${ticketId} was not found.`);
+      return {
+        cursor: created.ingestSequence.toString(),
+        ticket: await this.ticketFromRow({
+          ...ticket,
+          requesterId: requester.id,
+          requesterName: requester.name,
+          requesterEmail: requester.email
+        }, tx),
+        comment: toTicketComment(created)
+      };
     });
-    const ticket = await this.getTicket(ticketId);
-    if (!ticket) throw new Error(`Local ticket ${ticketId} was not found.`);
-    return { ...comment, ticket };
   }
 
   async addPublicReply(ticketId: string, input: { message: string; idempotencyKey: string }) {
@@ -232,14 +267,16 @@ export class LocalTicketGateway implements TicketGateway {
 
   async updateTicket(
     ticketId: string,
-    input: { addTags?: string[]; team?: string | null; status?: TicketStatus; idempotencyKey: string }
+    input: { addTags?: string[]; team?: TicketTeam | null; status?: TicketStatus; idempotencyKey: string }
   ) {
-    const addTags = [...new Set((input.addTags ?? []).map((tag) => requireText(tag, 'tag')))];
+    const addTags = [...new Set((input.addTags ?? []).map((tag) => requireText(tag, 'tag').toLowerCase()))];
+    const team = requireTeam(input.team);
+    const status = requireStatus(input.status);
     return this.idempotent(ticketId, input.idempotencyKey, {
       operation: 'update_ticket',
       addTags,
-      team: input.team,
-      status: input.status
+      team,
+      status
     }, async (tx) => {
       const [existing] = await tx.select().from(localTickets).where(eq(localTickets.id, ticketId));
       if (!existing) throw new Error(`Local ticket ${ticketId} was not found.`);
@@ -247,8 +284,8 @@ export class LocalTicketGateway implements TicketGateway {
         .update(localTickets)
         .set({
           tags: [...new Set([...existing.tags, ...addTags])],
-          team: input.team === undefined ? existing.team : input.team,
-          status: input.status ?? (existing.status as TicketStatus),
+          team: team === undefined ? existing.team : team,
+          status: status ?? existing.status,
           updatedAt: new Date()
         })
         .where(eq(localTickets.id, ticketId))
@@ -257,8 +294,8 @@ export class LocalTicketGateway implements TicketGateway {
       return {
         id: updated.id,
         tags: updated.tags,
-        team: updated.team,
-        status: updated.status as TicketStatus,
+        team: requireTeam(updated.team)!,
+        status: requireStatus(updated.status)!,
         updatedAt: updated.updatedAt.toISOString()
       };
     });
@@ -272,6 +309,7 @@ export class LocalTicketGateway implements TicketGateway {
   ) {
     const message = requireText(input.message, 'message');
     return this.idempotent(ticketId, input.idempotencyKey, { operation, message }, async (tx) => {
+      await this.lockCommentSequence(tx);
       const [created] = await tx
         .insert(localTicketComments)
         .values({ ticketId, author: 'agent', isPublic, body: message })
@@ -300,7 +338,7 @@ export class LocalTicketGateway implements TicketGateway {
     const key = requireText(idempotencyKey, 'idempotency key');
     const hash = requestHash(request);
     return this.database.transaction(async (tx) => {
-      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`${ticketId}:${key}`}))`);
+      await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('local-ticket-mutation'), hashtext(${ticketId}))`);
       const [existing] = await tx
         .select()
         .from(localTicketIdempotency)
@@ -313,5 +351,9 @@ export class LocalTicketGateway implements TicketGateway {
       await tx.insert(localTicketIdempotency).values({ ticketId, key, requestHash: hash, result });
       return result;
     });
+  }
+
+  private async lockCommentSequence(tx: Transaction): Promise<void> {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext('local-ticket-cursor'), 1)`);
   }
 }

@@ -1,7 +1,9 @@
 # Othram AI Support Agent
 
-Local demo for an AI support agent that handles Zendesk Tickets and browser
-voice conversations, escalating decisions to a human when needed.
+Local demo for an AI support agent that handles durable PostgreSQL-backed
+Tickets and browser voice conversations, escalating decisions to a human when
+needed. The current provider-limited delivery uses the Local Ticket System;
+real Zendesk integration remains future and unresolved.
 
 ## Prerequisites
 

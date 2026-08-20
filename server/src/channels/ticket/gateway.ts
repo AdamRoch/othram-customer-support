@@ -1,4 +1,5 @@
 export type TicketStatus = 'open' | 'pending' | 'solved';
+export type TicketTeam = 'Technical Team' | 'Billing' | 'General Support';
 
 export interface TicketRequester {
   id: string;
@@ -19,7 +20,7 @@ export interface TicketThread {
   subject: string;
   requester: TicketRequester;
   status: TicketStatus;
-  team: string | null;
+  team: TicketTeam | null;
   tags: string[];
   createdAt: string;
   updatedAt: string;
@@ -61,7 +62,7 @@ export interface TicketGateway {
   ): Promise<TicketComment>;
   updateTicket(
     ticketId: string,
-    input: { addTags?: string[]; team?: string | null; status?: TicketStatus } & TicketActionOptions
+    input: { addTags?: string[]; team?: TicketTeam | null; status?: TicketStatus } & TicketActionOptions
   ): Promise<Pick<TicketThread, 'id' | 'tags' | 'team' | 'status' | 'updatedAt'>>;
 }
 

@@ -7,12 +7,12 @@ demo Customers, Cases, stage durations, and KB chunks instead of creating
 duplicates. If the API key is missing or OpenAI returns an invalid embedding
 response, the command exits before writing any seed changes.
 
-## Zendesk requester emails
+## Local Ticket System requester emails
 
-Use these documented demo identities when creating Zendesk trial Tickets. They
-are deliberately under the reserved `.test` domain, so they are safe fixture
-addresses and must be created through the Zendesk API or agent workspace rather
-than sent email.
+Use these documented demo identities when creating Local Ticket System Tickets.
+They are deliberately under the reserved `.test` domain, so they are safe
+fixture addresses and must not be sent email. A future Zendesk adapter may use
+the same identities after real provider access is validated.
 
 | Customer | Email | Cases |
 |---|---|---|
