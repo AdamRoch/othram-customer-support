@@ -11,7 +11,10 @@ import type {
   KnowledgeSearchResponse
 } from '@othram/shared';
 import { AgentCore, ConversationNotFoundError } from './agent-core/core.js';
-import { createOpenAiAgentModel } from './agent-core/openai-model.js';
+import {
+  createOpenAiAgentModel,
+  createOpenAiKnowledgeGroundingClassifier
+} from './agent-core/openai-model.js';
 import { createSearchKnowledgeTool } from './agent-core/tools/search-knowledge.js';
 import { createCaseTimelineRepository } from './cases/repository.js';
 import type { CaseTimelineRepository } from './cases/repository.js';
@@ -77,7 +80,9 @@ export async function buildApp(options: BuildAppOptions = {}) {
       agentCore = new AgentCore(
         createOpenAiAgentModel(apiKey),
         undefined,
-        [createSearchKnowledgeTool(getKnowledgeSearchService())]
+        [createSearchKnowledgeTool(getKnowledgeSearchService())],
+        undefined,
+        createOpenAiKnowledgeGroundingClassifier(apiKey)
       );
     }
     return agentCore;

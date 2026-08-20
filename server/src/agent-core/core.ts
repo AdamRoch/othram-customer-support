@@ -74,14 +74,29 @@ export interface AgentCoreConfig {
 
 const DEFAULT_CONFIG: AgentCoreConfig = { confidenceThreshold: 0.7 };
 
+export type KnowledgeGroundingDecision = 'REQUIRED' | 'NOT_APPLICABLE';
+
+/**
+ * A policy boundary which classifies the Customer message before the replying
+ * model is allowed to select tools. The reply model must only attest to this
+ * decision, never make it.
+ */
+export interface KnowledgeGroundingClassifier {
+  classify(message: string): Promise<KnowledgeGroundingDecision>;
+}
+
+export const failClosedKnowledgeGroundingClassifier: KnowledgeGroundingClassifier = {
+  async classify() {
+    return 'REQUIRED';
+  }
+};
+
 interface ReplyArguments {
   message: string;
   confidence: number;
   emotionalState: CustomerEmotionalState;
   knowledgeGroundingDecision: KnowledgeGroundingDecision;
 }
-
-type KnowledgeGroundingDecision = 'REQUIRED' | 'NOT_APPLICABLE';
 
 const knowledgeGroundingDecisions: readonly KnowledgeGroundingDecision[] = [
   'REQUIRED',
@@ -190,39 +205,6 @@ function createReplyTool(): AgentTool {
   };
 }
 
-function createKnowledgeGroundingDecisionTool(): AgentTool {
-  return {
-    definition: {
-      type: 'function',
-      name: 'decide_knowledge_grounding',
-      description:
-        'Classify whether this Customer turn asks for Othram policy or process facts and therefore requires knowledge grounding.',
-      parameters: {
-        type: 'object',
-        properties: {
-          decision: { type: 'string', enum: knowledgeGroundingDecisions }
-        },
-        required: ['decision'],
-        additionalProperties: false
-      },
-      strict: true
-    },
-    async execute(argumentsValue) {
-      if (
-        typeof argumentsValue !== 'object' ||
-        argumentsValue === null ||
-        Array.isArray(argumentsValue) ||
-        !knowledgeGroundingDecisions.includes(
-          (argumentsValue as Record<string, unknown>).decision as KnowledgeGroundingDecision
-        )
-      ) {
-        throw new Error('The grounding decision tool requires a supported decision.');
-      }
-      return { output: { recorded: true } };
-    }
-  };
-}
-
 function assertReplyMeetsRequirements(
   message: string,
   latestSearchRequirement: ReplyRequirement | undefined,
@@ -274,14 +256,15 @@ export class AgentCore {
   private readonly conversations = new Map<string, AgentMessage[]>();
   private readonly conversationTails = new Map<string, Promise<void>>();
   private readonly tools: Map<string, AgentTool>;
-  private readonly groundingDecisionTool = createKnowledgeGroundingDecisionTool();
   private readonly hasKnowledgeSearch: boolean;
 
   constructor(
     private readonly model: AgentModel,
     private readonly createId: () => string = randomUUID,
     tools: AgentTool[] = [],
-    private readonly config: AgentCoreConfig = DEFAULT_CONFIG
+    private readonly config: AgentCoreConfig = DEFAULT_CONFIG,
+    private readonly knowledgeGroundingClassifier: KnowledgeGroundingClassifier =
+      failClosedKnowledgeGroundingClassifier
   ) {
     if (
       !Number.isFinite(config.confidenceThreshold) ||
@@ -335,63 +318,25 @@ export class AgentCore {
     let previousResponseId: string | undefined;
     let toolOutputs: AgentToolOutput[] | undefined;
     let latestSearchRequirement: ReplyRequirement | undefined;
-    let turnGroundingDecision: KnowledgeGroundingDecision | undefined = this.hasKnowledgeSearch
-      ? undefined
+    let latestSearchResultDeliveredToModel = false;
+    const turnGroundingDecision: KnowledgeGroundingDecision = this.hasKnowledgeSearch
+      ? await this.knowledgeGroundingClassifier.classify(message)
       : 'NOT_APPLICABLE';
 
     for (let step = 0; step < 8; step += 1) {
-      const availableTools = turnGroundingDecision
-        ? [...this.tools.values()].map((tool) => tool.definition)
-        : [this.groundingDecisionTool.definition];
+      if (latestSearchRequirement) {
+        latestSearchResultDeliveredToModel = true;
+      }
       const response = await this.model.generate({
-        instructions: turnGroundingDecision
-          ? AGENT_SYSTEM_PROMPT
-          : `${AGENT_SYSTEM_PROMPT}\n\nBefore taking any other action, classify this turn by calling decide_knowledge_grounding. Use REQUIRED for Othram policy or process questions and NOT_APPLICABLE for Case-specific, conversational, or off-topic turns.`,
+        instructions: `${AGENT_SYSTEM_PROMPT}\n\nThe independent knowledge-grounding decision for this turn is ${turnGroundingDecision}. Every reply tool call must include that exact value.`,
         messages,
-        tools: availableTools,
+        tools: [...this.tools.values()].map((tool) => tool.definition),
         previousResponseId,
         toolOutputs
       });
 
       if (response.toolCalls.length === 0) {
         throw new Error('Agent Core requires a reply tool call before completing a turn.');
-      }
-      if (!turnGroundingDecision) {
-        if (
-          response.toolCalls.length !== 1 ||
-          response.toolCalls[0]?.name !== this.groundingDecisionTool.definition.name
-        ) {
-          throw new Error('Agent Core requires an independent knowledge-grounding decision first.');
-        }
-
-        const call = response.toolCalls[0];
-        const argumentsValue = parseArguments(call);
-        const decision = (argumentsValue as Record<string, unknown>).decision;
-        await this.groundingDecisionTool.execute(argumentsValue);
-        turnGroundingDecision = decision as KnowledgeGroundingDecision;
-        events.push(
-          {
-            type: 'tool_called',
-            conversationId: id,
-            turnId,
-            sequence: events.length,
-            callId: call.callId,
-            toolName: call.name,
-            arguments: argumentsValue
-          },
-          {
-            type: 'tool_completed',
-            conversationId: id,
-            turnId,
-            sequence: events.length + 1,
-            callId: call.callId,
-            toolName: call.name,
-            result: { recorded: true }
-          }
-        );
-        previousResponseId = response.responseId;
-        toolOutputs = [{ callId: call.callId, output: JSON.stringify({ recorded: true }) }];
-        continue;
       }
       if (response.toolCalls.filter((call) => call.name === 'reply' || call.name === 'escalate').length > 1) {
         throw new Error('Agent Core accepts exactly one reply or escalation action per turn.');
@@ -443,6 +388,7 @@ export class AgentCore {
 
         if (call.name === 'search_knowledge' && result.replyRequirement) {
           latestSearchRequirement = result.replyRequirement;
+          latestSearchResultDeliveredToModel = false;
         }
 
         const emotionalState = terminalActionDeferred
@@ -491,8 +437,16 @@ export class AgentCore {
         if (reply && reply.arguments.knowledgeGroundingDecision !== turnGroundingDecision) {
           throw new Error('The reply grounding decision must match the independent turn decision.');
         }
-        if (turnGroundingDecision === 'REQUIRED' && !latestSearchRequirement && escalation) {
-          throw new Error('A terminal action requires a completed knowledge search.');
+        if (
+          turnGroundingDecision === 'REQUIRED' &&
+          (!latestSearchRequirement || !latestSearchResultDeliveredToModel) &&
+          (reply || escalation)
+        ) {
+          throw new Error(
+            reply
+              ? 'A Customer-facing reply requires a completed knowledge search.'
+              : 'A terminal action requires a completed knowledge search.'
+          );
         }
         const automaticEscalationReason =
           reply?.arguments.emotionalState === 'FRUSTRATED'
@@ -501,13 +455,6 @@ export class AgentCore {
               ? 'LOW_CONFIDENCE'
               : undefined;
         const willEscalate = escalation !== undefined || automaticEscalationReason !== undefined;
-        if (
-          latestSearchRequirement?.requiredMessage &&
-          reply &&
-          reply.message !== latestSearchRequirement.requiredMessage
-        ) {
-          throw new Error('A knowledge search with no results requires the honest no-results response.');
-        }
         const finalReply = latestSearchRequirement?.requiredMessage
           ? {
               message: latestSearchRequirement.requiredMessage,

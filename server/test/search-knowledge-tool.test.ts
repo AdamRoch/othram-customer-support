@@ -5,31 +5,11 @@ import {
   KNOWLEDGE_NO_RESULTS_MESSAGE
 } from '../src/agent-core/tools/search-knowledge.js';
 import type { KnowledgeSearchService } from '../src/knowledge/search.js';
-import type { AgentModel, AgentModelRequest, AgentTool } from '../src/agent-core/core.js';
-
-function withGroundingDecision(
-  model: AgentModel,
-  decision: 'REQUIRED' | 'NOT_APPLICABLE'
-): AgentModel {
-  return {
-    async generate(request: AgentModelRequest) {
-      if (request.tools.length === 1 && request.tools[0]?.name === 'decide_knowledge_grounding') {
-        return {
-          responseId: 'response-grounding-decision',
-          outputText: '',
-          toolCalls: [
-            {
-              callId: 'grounding-decision-call',
-              name: 'decide_knowledge_grounding',
-              arguments: JSON.stringify({ decision })
-            }
-          ]
-        };
-      }
-      return model.generate(request);
-    }
-  };
-}
+import type {
+  AgentModel,
+  AgentTool,
+  KnowledgeGroundingClassifier
+} from '../src/agent-core/core.js';
 
 function createCore(
   model: AgentModel,
@@ -37,7 +17,8 @@ function createCore(
   tools: AgentTool[],
   decision: 'REQUIRED' | 'NOT_APPLICABLE' = 'REQUIRED'
 ) {
-  return new AgentCore(withGroundingDecision(model, decision), createId, tools);
+  const classifier: KnowledgeGroundingClassifier = { async classify() { return decision; } };
+  return new AgentCore(model, createId, tools, undefined, classifier);
 }
 
 function sequentialIds(...ids: string[]) {
@@ -267,7 +248,7 @@ describe('search_knowledge Agent Tool', () => {
     );
   });
 
-  it('rejects a reply that contradicts the independent grounding decision', async () => {
+  it('rejects a malicious policy reply that claims grounding is not applicable', async () => {
     const core = createCore(
       {
         async generate() {
@@ -327,7 +308,7 @@ describe('search_knowledge Agent Tool', () => {
     });
   });
 
-  it('requires the no-results specialist offer verbatim', async () => {
+  it('canonicalizes a malformed no-results draft before replying', async () => {
     const core = createCore(
       modelThatSearchesThenReplies(`${KNOWLEDGE_NO_RESULTS_MESSAGE} Is there anything else?`),
       sequentialIds('conversation-1', 'turn-1'),
@@ -340,9 +321,9 @@ describe('search_knowledge Agent Tool', () => {
       ]
     );
 
-    await expect(core.runTurn('What is the policy for an unknown process?')).rejects.toThrow(
-      'requires the honest no-results response'
-    );
+    await expect(core.runTurn('What is the policy for an unknown process?')).resolves.toMatchObject({
+      reply: KNOWLEDGE_NO_RESULTS_MESSAGE
+    });
   });
 
   it('delivers the no-results offer while preserving automatic escalation', async () => {
@@ -469,6 +450,56 @@ describe('search_knowledge Agent Tool', () => {
                 toolCalls: [
                   replyCall,
                   { callId: 'search-call', name: 'search_knowledge', arguments: '{"query":"media"}' }
+                ]
+              }
+            : { responseId: 'response-reply', outputText: '', toolCalls: [replyCall] };
+        }
+      },
+      sequentialIds('conversation-1', 'turn-1'),
+      [
+        createSearchKnowledgeTool({
+          async search() {
+            return [{
+              content: 'Media use policy.',
+              citation: {
+                document: 'Media Permission Policy', section: 'Policy', category: 'Policies', sourcePath: 'media.md'
+              },
+              similarity: 0.9
+            }];
+          }
+        })
+      ]
+    );
+
+    await expect(core.runTurn('Can I use media?')).resolves.toMatchObject({
+      reply: 'Media may be used. [Media Permission Policy §Policy]'
+    });
+    expect(calls).toBe(2);
+  });
+
+  it('requires a later grounded reply when search appears before reply in the same batch', async () => {
+    let calls = 0;
+    const core = createCore(
+      {
+        async generate() {
+          calls += 1;
+          const replyCall = {
+            callId: `reply-call-${calls}`,
+            name: 'reply',
+            arguments: JSON.stringify({
+              message: 'Media may be used. [Media Permission Policy §Policy]',
+              confidence: 0.9,
+              emotionalState: 'NEUTRAL',
+              knowledgeGroundingDecision: 'REQUIRED'
+            })
+          };
+          return calls === 1
+            ? {
+                responseId: 'response-search',
+                outputText: '',
+                toolCalls: [
+                  { callId: 'search-call', name: 'search_knowledge', arguments: '{"query":"media"}' },
+                  replyCall
                 ]
               }
             : { responseId: 'response-reply', outputText: '', toolCalls: [replyCall] };
