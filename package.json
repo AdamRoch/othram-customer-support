@@ -8,6 +8,7 @@
     "build": "pnpm --filter @othram/shared build && pnpm --filter @othram/server build && pnpm --filter @othram/web build",
     "db:migrate": "pnpm --filter @othram/server db:migrate",
     "seed": "pnpm --filter @othram/server seed",
+    "eval": "pnpm --filter @othram/server eval",
     "smoke:vendors": "pnpm --filter @othram/server smoke:vendors",
     "typecheck": "pnpm -r typecheck",
     "lint": "eslint .",
