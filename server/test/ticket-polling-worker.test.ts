@@ -412,6 +412,36 @@ describeWithDatabase('TicketPollingWorker', () => {
     expect(work.some((item) => item.status === 'PENDING')).toBe(true);
   });
 
+  it('hydrates and executes legacy parked escalations from durable ticket history', async () => {
+    const { worker, gateway, model, ticket } = await setup({ escalation: true });
+    await worker.pollOnce();
+    expect(await worker.processOne()).toBe('ESCALATION_PENDING');
+    const [parked] = await database!.db.select().from(ticketWorkItems)
+      .where(eq(ticketWorkItems.ticketId, ticket.id));
+    await database!.db.update(ticketWorkItems).set({
+      escalation: {
+        reason: 'CUSTOMER_REQUESTS_HUMAN',
+        summary: 'Customer asked for a person.',
+        team: 'General Support'
+      }
+    }).where(eq(ticketWorkItems.id, parked!.id));
+    await gateway.addInternalNote(ticket.id, { message: 'Private future note.', idempotencyKey: 'private-future' });
+    await gateway.addRequesterComment(ticket.id, { message: 'Public future message.', idempotencyKey: 'public-future' });
+
+    expect(await worker.processOne()).toBe('ESCALATED');
+
+    const [recovered] = await database!.db.select().from(ticketWorkItems)
+      .where(eq(ticketWorkItems.id, parked!.id));
+    expect(recovered?.status).toBe('ESCALATED');
+    expect(recovered?.escalation).toMatchObject({
+      inboundCommentId: parked!.inboundCommentId,
+      turnId: `legacy-${parked!.id}`
+    });
+    const escalation = recovered?.escalation as { context: { body: string }[] };
+    expect(escalation.context.map((message) => message.body)).toEqual(['Where is case OTH-101?']);
+    expect(model.requests).toHaveLength(1);
+  });
+
   it('captures only public context through the inbound message and retries an escalation crash without duplicates', async () => {
     let failOnce = true;
     const { worker, gateway, ticket, advance } = await setup({

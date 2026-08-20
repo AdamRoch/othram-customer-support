@@ -26,6 +26,12 @@ export interface TicketWorkEscalation {
   context: TicketEscalationContextMessage[];
 }
 
+interface LegacyTicketWorkEscalation {
+  reason: EscalationReason;
+  summary: string;
+  team: TicketTeam;
+}
+
 export interface TicketWorkerItem {
   id: string;
   ticketId: string;
@@ -38,7 +44,7 @@ export interface TicketWorkerItem {
   attempts: number;
   replyText: string | null;
   replyIdempotencyKey: string;
-  escalation: TicketWorkEscalation | null;
+  escalation: TicketWorkEscalation | LegacyTicketWorkEscalation | null;
 }
 
 export interface TicketPollingWorkerOptions {
@@ -88,21 +94,24 @@ function asWorkItem(row: Record<string, unknown>): TicketWorkerItem {
   };
 }
 
-function parseEscalation(value: unknown): TicketWorkEscalation | null {
+function parseEscalation(value: unknown): TicketWorkEscalation | LegacyTicketWorkEscalation | null {
   if (value === null || value === undefined) return null;
   if (typeof value !== 'object' || Array.isArray(value)) throw new Error('Persisted escalation must be an object.');
   const { inboundCommentId, turnId, reason, summary, team, context } = value as Record<string, unknown>;
-  if (
-    typeof inboundCommentId !== 'string' || !inboundCommentId.trim() ||
-    typeof turnId !== 'string' || !turnId.trim() || typeof summary !== 'string' || !summary.trim()
-  ) {
-    throw new Error('Persisted escalation has invalid turn details.');
-  }
+  if (typeof summary !== 'string' || !summary.trim()) throw new Error('Persisted escalation has invalid summary.');
   if (typeof reason !== 'string' || !escalationReasons.includes(reason as EscalationReason)) {
     throw new Error('Persisted escalation has an unsupported reason.');
   }
   if (team !== 'Technical Team' && team !== 'Billing' && team !== 'General Support') {
     throw new Error('Persisted escalation has an unsupported team.');
+  }
+  const legacy = inboundCommentId === undefined && turnId === undefined && context === undefined;
+  if (legacy) return { reason: reason as EscalationReason, summary, team };
+  if (
+    typeof inboundCommentId !== 'string' || !inboundCommentId.trim() ||
+    typeof turnId !== 'string' || !turnId.trim()
+  ) {
+    throw new Error('Persisted escalation has invalid turn details.');
   }
   if (!Array.isArray(context) || context.some((message) => {
     if (typeof message !== 'object' || message === null || Array.isArray(message)) return true;
@@ -224,7 +233,12 @@ export class TicketPollingWorker {
   }
 
   private async processClaimedItem(item: TicketWorkerItem): Promise<TicketWorkStatus> {
-    if (item.escalation) return this.executeEscalation(item);
+    if (item.escalation) {
+      const escalation = 'turnId' in item.escalation
+        ? item.escalation
+        : await this.hydrateLegacyEscalation(item, item.escalation);
+      return this.executeEscalation(item, escalation);
+    }
 
     const ticket = await this.options.gateway.getTicket(item.ticketId);
     if (!ticket) throw new Error(`Ticket ${item.ticketId} disappeared before processing.`);
@@ -265,9 +279,10 @@ export class TicketPollingWorker {
     return 'REPLIED';
   }
 
-  private async executeEscalation(item: TicketWorkerItem): Promise<TicketWorkStatus> {
-    const escalation = item.escalation;
-    if (!escalation) throw new Error(`Work item ${item.id} has no escalation to execute.`);
+  private async executeEscalation(
+    item: TicketWorkerItem,
+    escalation: TicketWorkEscalation
+  ): Promise<TicketWorkStatus> {
     await this.options.gateway.applyEscalation(item.ticketId, {
       ...escalation,
       idempotencyKey: `ticket:${item.ticketId}:turn:${escalation.turnId}:escalation`
@@ -275,6 +290,32 @@ export class TicketPollingWorker {
     await this.options.afterGatewayEscalation?.();
     await this.markEscalated(item);
     return 'ESCALATED';
+  }
+
+  private async hydrateLegacyEscalation(
+    item: TicketWorkerItem,
+    legacy: LegacyTicketWorkEscalation
+  ): Promise<TicketWorkEscalation> {
+    const ticket = await this.options.gateway.getTicket(item.ticketId);
+    if (!ticket) throw new Error(`Ticket ${item.ticketId} disappeared before escalation recovery.`);
+    const inbound = ticket.comments.find((comment) => comment.id === item.inboundCommentId);
+    if (!inbound || inbound.author !== 'requester' || !inbound.isPublic) {
+      throw new Error(`Work item ${item.id} does not reference a public requester update.`);
+    }
+    const escalation = {
+      ...legacy,
+      inboundCommentId: item.inboundCommentId,
+      turnId: `legacy-${item.id}`,
+      context: escalationContext(ticket, item.inboundCommentId)
+    };
+    const leaseToken = this.requireLease(item);
+    const changed = await this.options.database
+      .update(ticketWorkItems)
+      .set({ escalation, updatedAt: this.now() })
+      .where(and(eq(ticketWorkItems.id, item.id), eq(ticketWorkItems.leaseToken, leaseToken)))
+      .returning({ id: ticketWorkItems.id });
+    if (changed.length !== 1) throw new Error(`Lost lease while recovering escalation for ${item.id}.`);
+    return escalation;
   }
 
   /** One durable poll plus bounded processing; safe to call after restart. */
