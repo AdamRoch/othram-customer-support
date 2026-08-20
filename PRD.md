@@ -42,7 +42,7 @@ resolved without escalation.
 - Simulated Case System (local, seeded, behind an interface)
 - Browser voice channel with Emotional Delivery
 - Knowledge base with grounded (cited) answers
-- Escalation with ticket tags, exact team assignment, status, and internal notes
+- Durable escalation decisions parked for the OTHRM-17 delivery workflow
 - In-repo eval scenario runner with scoreboard
 - Voice demo page + operator console
 
@@ -129,8 +129,8 @@ pnpm workspaces.
   the Ticket with stable idempotency keys. Durable leases and retryable work
   states cover concurrent workers, expiry, restart, and the delivery crash
   window without duplicate visible replies.
-- Persists escalations as pending work. The escalation executor consumes that
-  work using the mechanics in §6.4.
+- Persists escalations as pending work for OTHRM-17; this channel does not yet
+  deliver the acknowledgment, internal note, tags, assignment, or open status.
 
 ### 5.3 Voice channel adapter (`server/src/channels/voice/`)
 
@@ -223,12 +223,12 @@ confidence (below a single tunable threshold — the "escalation balance" dial).
 
 ### 6.4 Escalation mechanics
 
-The polling channel first durably parks `escalate(reason, summary, team)`
-output. The escalation executor then adds an internal note with context,
-assigns the exact team (`Technical Team` / `Billing` / `General Support`), adds
-`ai-escalated` and reason tags, sets status to `open`, and posts a polite
+The polling channel durably parks `escalate(reason, summary, team)` output as
+pending work and sends no public reply. OTHRM-17 owns delivery of the internal
+note and context, exact team assignment (`Technical Team` / `Billing` /
+`General Support`), `ai-escalated` and reason tags, `open` status, and polite
 Customer acknowledgment. The parked event remains auditable for the
-human-avoidance metric, and delivery retries use stable idempotency keys.
+human-avoidance metric.
 
 ## 7. Seed data
 
@@ -271,8 +271,8 @@ bar, mapping 1:1 to the brief's use cases and evaluation criteria.
 1. Case status ("sent it last Thursday") → resolved, computed timeline
 2. Photo permission request → resolved (policy: always yes, cited)
 3. Process question (evidence packaging) → resolved, KB-grounded
-4. DNA mismatch / reprocessing → escalated to Technical Team
-5. Billing dispute → escalated to Billing; billing question (invoice copy) → resolved
+4. DNA mismatch / reprocessing → escalation parked with Technical Team metadata
+5. Billing dispute → escalation parked with Billing metadata; billing question (invoice copy) → resolved
 6. Off-topic (grant proposal) → polite redirect, no escalation
 7. Unknown case number → honest not-found + specialist offer, no guess
 8. Angry email about a delay → empathetic escalation
@@ -296,6 +296,7 @@ joke scenarios on camera, emotion readout visible. No cloud deployment.
 ## 11. Backlog (post-demo, not in this build)
 
 - Real Zendesk adapter and end-to-end validation after provider access is restored
+- OTHRM-17 escalation delivery through `TicketGateway`
 - Braintrust-based evals/observability (dashboards, LLM-as-judge) — supersedes
   nothing; layers on top of the in-repo runner
 - Telephony (Twilio) as a third channel on the existing Voice pipeline
