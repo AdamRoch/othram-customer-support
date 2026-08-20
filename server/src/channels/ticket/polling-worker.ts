@@ -156,6 +156,10 @@ export class TicketPollingWorker {
   async processOne(): Promise<TicketWorkStatus | null> {
     const item = await this.claimOne();
     if (!item) return null;
+    return this.processClaimedItem(item);
+  }
+
+  private async processClaimedItem(item: TicketWorkerItem): Promise<TicketWorkStatus> {
     const ticket = await this.options.gateway.getTicket(item.ticketId);
     if (!ticket) throw new Error(`Ticket ${item.ticketId} disappeared before processing.`);
 
@@ -199,12 +203,22 @@ export class TicketPollingWorker {
   async drain(input: { maxItems?: number } = {}): Promise<{ enqueued: number; processed: number }> {
     const maxItems = input.maxItems ?? 100;
     const polled = await this.pollOnce();
+    const failures: unknown[] = [];
+    let attempted = 0;
     let processed = 0;
-    while (processed < maxItems) {
-      const status = await this.processOne();
-      if (!status) break;
-      processed += 1;
+    while (attempted < maxItems) {
+      const item = await this.claimOne();
+      if (!item) break;
+      attempted += 1;
+      try {
+        await this.processClaimedItem(item);
+        processed += 1;
+      } catch (error: unknown) {
+        failures.push(error);
+      }
     }
+    if (failures.length === 1) throw failures[0];
+    if (failures.length > 1) throw new AggregateError(failures, 'Multiple ticket work items failed.');
     return { enqueued: polled.enqueued, processed };
   }
 

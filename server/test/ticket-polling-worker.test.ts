@@ -54,6 +54,27 @@ class ScriptedModel implements AgentModel {
   }
 }
 
+class PoisonAwareModel implements AgentModel {
+  async generate(request: AgentModelRequest): Promise<AgentModelResponse> {
+    const inbound = request.messages.at(-1)?.content;
+    if (inbound === 'This item is poison.') throw new Error('simulated model failure');
+    return {
+      responseId: 'healthy-response',
+      outputText: '',
+      toolCalls: [{
+        callId: 'healthy-reply',
+        name: 'reply',
+        arguments: JSON.stringify({
+          message: 'Healthy ticket reply.',
+          confidence: 0.9,
+          emotionalState: 'NEUTRAL',
+          knowledgeGroundingDecision: 'NOT_APPLICABLE'
+        })
+      }]
+    };
+  }
+}
+
 describeWithDatabase('TicketPollingWorker', () => {
   beforeAll(async () => {
     if (!database) return;
@@ -206,6 +227,32 @@ describeWithDatabase('TicketPollingWorker', () => {
     expect((await gateway.getTicket(ticket.id))?.comments.filter((comment) => comment.author === 'agent' && comment.isPublic))
       .toHaveLength(1);
     expect((await gateway.getTicket(ticket.id))?.status).toBe('solved');
+  });
+
+  it('continues draining unrelated tickets after an item fails', async () => {
+    if (!database) throw new Error('TEST_DATABASE_URL was not configured.');
+    const gateway = new LocalTicketGateway(database.db);
+    const poison = await gateway.createTicket({
+      requester: { name: 'Poison Requester', email: 'poison@othram-demo.test' },
+      subject: 'Poison ticket',
+      message: 'This item is poison.'
+    });
+    const healthy = await gateway.createTicket({
+      requester: { name: 'Healthy Requester', email: 'healthy@othram-demo.test' },
+      subject: 'Healthy ticket',
+      message: 'Please process this ticket.'
+    });
+    const worker = new TicketPollingWorker({
+      database: database.db,
+      gateway,
+      createAgentCore: () => new AgentCore(new PoisonAwareModel()),
+      leaseMs: 30_000
+    });
+
+    await expect(worker.drain()).rejects.toThrow('simulated model failure');
+    expect((await gateway.getTicket(poison.id))?.status).toBe('open');
+    expect((await gateway.getTicket(healthy.id))?.status).toBe('solved');
+    expect((await gateway.getTicket(healthy.id))?.comments.at(-1)?.body).toBe('Healthy ticket reply.');
   });
 
   it('does not steal READY_TO_SEND work while its delivery lease is live', async () => {
