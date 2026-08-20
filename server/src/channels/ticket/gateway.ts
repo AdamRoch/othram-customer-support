@@ -38,6 +38,10 @@ export interface TicketActionOptions {
 }
 
 export interface TicketGateway {
+  /**
+   * `nextCursor` is the durable checkpoint after every returned update. It may
+   * be null only when no checkpoint exists and the page is empty.
+   */
   listRequesterUpdates(input?: { cursor?: string; limit?: number }): Promise<{
     updates: RequesterUpdate[];
     nextCursor: string | null;

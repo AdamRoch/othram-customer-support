@@ -52,6 +52,18 @@ required knowledge search found nothing.
 
 The optional model override is documented in [`.env.example`](.env.example).
 
+## Local Ticket channel
+
+The Local Ticket System stores Tickets and processing checkpoints in
+PostgreSQL. To have the running server process new requester comments, set
+`LOCAL_TICKET_POLLING_ENABLED=true`. The server polls immediately at startup
+and then uses `LOCAL_TICKET_POLL_INTERVAL_MS`, which defaults to 30 seconds.
+Each poll is non-overlapping, and server shutdown waits for the active poll
+before closing the database connection.
+
+This channel is local and provider-limited. It does not call Zendesk or prove
+Zendesk behavior.
+
 ## Database
 
 The local database is PostgreSQL 16 with the `pgvector` extension. Start it
