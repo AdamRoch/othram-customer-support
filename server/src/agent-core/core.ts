@@ -78,7 +78,15 @@ interface ReplyArguments {
   message: string;
   confidence: number;
   emotionalState: CustomerEmotionalState;
+  knowledgeGroundingDecision: KnowledgeGroundingDecision;
 }
+
+type KnowledgeGroundingDecision = 'REQUIRED' | 'NOT_APPLICABLE';
+
+const knowledgeGroundingDecisions: readonly KnowledgeGroundingDecision[] = [
+  'REQUIRED',
+  'NOT_APPLICABLE'
+];
 
 interface EscalationArguments {
   reason: EscalationReason;
@@ -109,7 +117,7 @@ function parseReplyArguments(value: unknown): ReplyArguments {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     throw new Error('The reply tool requires an object.');
   }
-  const { message, confidence, emotionalState } = value as Record<string, unknown>;
+  const { message, confidence, emotionalState, knowledgeGroundingDecision } = value as Record<string, unknown>;
   if (typeof message !== 'string' || !message.trim()) {
     throw new Error('The reply tool requires a non-empty message.');
   }
@@ -119,7 +127,18 @@ function parseReplyArguments(value: unknown): ReplyArguments {
   if (!isCustomerEmotionalState(emotionalState)) {
     throw new Error('The reply tool requires a supported customer emotional state.');
   }
-  return { message: message.trim(), confidence, emotionalState };
+  if (
+    typeof knowledgeGroundingDecision !== 'string' ||
+    !knowledgeGroundingDecisions.includes(knowledgeGroundingDecision as KnowledgeGroundingDecision)
+  ) {
+    throw new Error('The reply tool requires a supported knowledge grounding decision.');
+  }
+  return {
+    message: message.trim(),
+    confidence,
+    emotionalState,
+    knowledgeGroundingDecision: knowledgeGroundingDecision as KnowledgeGroundingDecision
+  };
 }
 
 function parseEscalationArguments(value: unknown): EscalationArguments {
@@ -153,9 +172,10 @@ function createReplyTool(): AgentTool {
         properties: {
           message: { type: 'string', minLength: 1 },
           confidence: { type: 'number', minimum: 0, maximum: 1 },
-          emotionalState: { type: 'string', enum: customerEmotionalStates }
+          emotionalState: { type: 'string', enum: customerEmotionalStates },
+          knowledgeGroundingDecision: { type: 'string', enum: knowledgeGroundingDecisions }
         },
-        required: ['message', 'confidence', 'emotionalState'],
+        required: ['message', 'confidence', 'emotionalState', 'knowledgeGroundingDecision'],
         additionalProperties: false
       },
       strict: true
@@ -169,24 +189,22 @@ function createReplyTool(): AgentTool {
 
 function assertReplyMeetsRequirements(
   message: string,
-  requirements: ReadonlyArray<ReplyRequirement>,
-  requiresKnowledgeGrounding: boolean
+  latestSearchRequirement: ReplyRequirement | undefined,
+  knowledgeGroundingDecision: KnowledgeGroundingDecision
 ): void {
-  if (requiresKnowledgeGrounding && requirements.length === 0) {
+  if (knowledgeGroundingDecision === 'REQUIRED' && !latestSearchRequirement) {
     throw new Error('A Customer-facing reply requires a completed knowledge search.');
   }
 
-  for (const requirement of requirements) {
-    if (requirement.requiredMessage && message !== requirement.requiredMessage) {
-      throw new Error('A knowledge search with no results requires the honest no-results response.');
-    }
+  if (latestSearchRequirement?.requiredMessage && message !== latestSearchRequirement.requiredMessage) {
+    throw new Error('A knowledge search with no results requires the honest no-results response.');
+  }
 
-    if (
-      requirement.citationOptions &&
-      !requirement.citationOptions.some((citation) => message.includes(citation))
-    ) {
-      throw new Error('A knowledge-grounded reply must include a citation from the retrieved passages.');
-    }
+  if (
+    latestSearchRequirement?.citationOptions &&
+    !latestSearchRequirement.citationOptions.some((citation) => message.includes(citation))
+  ) {
+    throw new Error('A knowledge-grounded reply must include a citation from the retrieved passages.');
   }
 }
 
@@ -220,7 +238,6 @@ export class AgentCore {
   private readonly conversations = new Map<string, AgentMessage[]>();
   private readonly conversationTails = new Map<string, Promise<void>>();
   private readonly tools: Map<string, AgentTool>;
-  private readonly requiresKnowledgeGrounding: boolean;
 
   constructor(
     private readonly model: AgentModel,
@@ -238,7 +255,6 @@ export class AgentCore {
     this.tools = new Map(
       [createReplyTool(), createEscalateTool(), ...tools].map((tool) => [tool.definition.name, tool])
     );
-    this.requiresKnowledgeGrounding = this.tools.has('search_knowledge');
   }
 
   async runTurn(message: string, conversationId?: string): Promise<ChatResponse> {
@@ -279,7 +295,7 @@ export class AgentCore {
     ];
     let previousResponseId: string | undefined;
     let toolOutputs: AgentToolOutput[] | undefined;
-    const replyRequirements: ReplyRequirement[] = [];
+    let latestSearchRequirement: ReplyRequirement | undefined;
 
     for (let step = 0; step < 8; step += 1) {
       const response = await this.model.generate({
@@ -298,8 +314,8 @@ export class AgentCore {
       }
 
       const nextOutputs: AgentToolOutput[] = [];
-      let replyMessage: string | undefined;
-      let escalated = false;
+      let reply: { message: string; arguments: ReplyArguments } | undefined;
+      let escalation: EscalationArguments | undefined;
       for (const call of response.toolCalls) {
         const tool = this.tools.get(call.name);
         if (!tool) {
@@ -321,15 +337,6 @@ export class AgentCore {
         const escalationArguments =
           call.name === 'escalate' ? parseEscalationArguments(argumentsValue) : undefined;
         const result = await tool.execute(argumentsValue);
-        const mustDeliverRequiredMessage = replyRequirements.some(
-          (requirement) => requirement.requiredMessage !== undefined
-        );
-        const automaticEscalationReason =
-          replyArguments?.emotionalState === 'FRUSTRATED'
-            ? 'CUSTOMER_FRUSTRATED'
-            : replyArguments !== undefined && replyArguments.confidence < this.config.confidenceThreshold
-              ? 'LOW_CONFIDENCE'
-              : undefined;
         events.push({
           type: 'tool_completed',
           conversationId: id,
@@ -337,13 +344,11 @@ export class AgentCore {
           sequence: events.length,
           callId: call.callId,
           toolName: call.name,
-          result: automaticEscalationReason
-            ? { accepted: false, reason: automaticEscalationReason }
-            : result.output
+          result: result.output
         });
 
-        if (result.replyRequirement) {
-          replyRequirements.push(result.replyRequirement);
+        if (call.name === 'search_knowledge' && result.replyRequirement) {
+          latestSearchRequirement = result.replyRequirement;
         }
 
         const emotionalState = replyArguments?.emotionalState ?? escalationArguments?.emotionalState;
@@ -367,75 +372,74 @@ export class AgentCore {
         }
 
         if (escalationArguments) {
-          if (escalated) throw new Error('Agent Core received multiple escalation tool calls in one turn.');
-          escalated = true;
-          events.push({
-            type: 'escalated',
-            conversationId: id,
-            turnId,
-            sequence: events.length,
-            reason: escalationArguments.reason,
-            summary: escalationArguments.summary,
-            team: escalationArguments.team
-          });
+          escalation = escalationArguments;
         }
 
         if (result.reply) {
-          if (replyMessage !== undefined) {
+          if (reply !== undefined) {
             throw new Error('Agent Core received multiple reply tool calls in one step.');
           }
-          if (automaticEscalationReason) {
-            if (mustDeliverRequiredMessage) {
-              replyMessage = result.reply;
-              events.push({
-                type: 'reply_created',
-                conversationId: id,
-                turnId,
-                sequence: events.length,
-                message: result.reply
-              });
-            }
-            escalated = true;
-            events.push({
-              type: 'escalated',
-              conversationId: id,
-              turnId,
-              sequence: events.length,
-              reason: automaticEscalationReason,
-              summary:
-                automaticEscalationReason === 'LOW_CONFIDENCE'
-                  ? 'Draft reply confidence was below the configured escalation threshold.'
-                  : 'Customer emotional state was frustrated.',
-              team: 'General Support'
-            });
-          } else {
-            replyMessage = result.reply;
-            events.push({
-              type: 'reply_created',
-              conversationId: id,
-              turnId,
-              sequence: events.length,
-              message: result.reply
-            });
-          }
+          reply = { message: result.reply, arguments: replyArguments! };
         } else {
           nextOutputs.push({ callId: call.callId, output: JSON.stringify(result.output) });
         }
       }
 
-      if (replyMessage !== undefined || escalated) {
-        if (replyMessage !== undefined) {
+      if (reply !== undefined || escalation !== undefined) {
+        const automaticEscalationReason =
+          reply?.arguments.emotionalState === 'FRUSTRATED'
+            ? 'CUSTOMER_FRUSTRATED'
+            : reply !== undefined && reply.arguments.confidence < this.config.confidenceThreshold
+              ? 'LOW_CONFIDENCE'
+              : undefined;
+        const finalReply = latestSearchRequirement?.requiredMessage
+          ? reply?.message ?? latestSearchRequirement.requiredMessage
+          : automaticEscalationReason
+            ? undefined
+            : reply?.message;
+
+        if (finalReply !== undefined) {
           assertReplyMeetsRequirements(
-            replyMessage,
-            replyRequirements,
-            this.requiresKnowledgeGrounding
+            finalReply,
+            latestSearchRequirement,
+            reply?.arguments.knowledgeGroundingDecision ?? 'NOT_APPLICABLE'
           );
+          events.push({
+            type: 'reply_created',
+            conversationId: id,
+            turnId,
+            sequence: events.length,
+            message: finalReply
+          });
+        }
+
+        const finalEscalation = escalation ??
+          (automaticEscalationReason
+            ? {
+                reason: automaticEscalationReason,
+                summary:
+                  automaticEscalationReason === 'LOW_CONFIDENCE'
+                    ? 'Draft reply confidence was below the configured escalation threshold.'
+                    : 'Customer emotional state was frustrated.',
+                team: 'General Support' as const
+              }
+            : undefined);
+        if (finalEscalation) {
+          events.push({
+            type: 'escalated',
+            conversationId: id,
+            turnId,
+            sequence: events.length,
+            reason: finalEscalation.reason,
+            summary: finalEscalation.summary,
+            team: finalEscalation.team
+          });
         }
         this.conversations.set(id, [
           ...messages,
-          ...(replyMessage === undefined ? [] : [{ role: 'assistant' as const, content: replyMessage }])
+          ...(finalReply === undefined ? [] : [{ role: 'assistant' as const, content: finalReply }])
         ]);
-        return { conversationId: id, reply: replyMessage ?? null, events };
+        return { conversationId: id, reply: finalReply ?? null, events };
       }
 
       previousResponseId = response.responseId;

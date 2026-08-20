@@ -25,7 +25,12 @@ class ReplyingModel implements AgentModel {
         {
           callId: `call-${this.requests.length}`,
           name: 'reply',
-          arguments: JSON.stringify({ message, confidence: 0.9, emotionalState: 'NEUTRAL' })
+          arguments: JSON.stringify({
+            message,
+            confidence: 0.9,
+            emotionalState: 'NEUTRAL',
+            knowledgeGroundingDecision: 'NOT_APPLICABLE'
+          })
         }
       ]
     };
@@ -65,7 +70,12 @@ describe('AgentCore', () => {
           sequence: 1,
           callId: 'call-1',
           toolName: 'reply',
-          arguments: { message: 'Reply 1', confidence: 0.9, emotionalState: 'NEUTRAL' }
+          arguments: {
+            message: 'Reply 1',
+            confidence: 0.9,
+            emotionalState: 'NEUTRAL',
+            knowledgeGroundingDecision: 'NOT_APPLICABLE'
+          }
         },
         {
           type: 'tool_completed',
@@ -151,7 +161,7 @@ describe('AgentCore', () => {
           responseId: 'response-1',
           outputText: '',
           toolCalls: [
-            { callId: 'reply-call', name: 'reply', arguments: '{"message":"Done","confidence":0.9,"emotionalState":"NEUTRAL"}' },
+            { callId: 'reply-call', name: 'reply', arguments: '{"message":"Done","confidence":0.9,"emotionalState":"NEUTRAL","knowledgeGroundingDecision":"NOT_APPLICABLE"}' },
             { callId: 'audit-call', name: 'audit', arguments: '{"caseId":"case-1"}' }
           ]
         };
@@ -221,7 +231,7 @@ describe('AgentCore', () => {
               {
                 callId: 'reply-call',
                 name: 'reply',
-                arguments: '{"message":"Draft","confidence":0.69,"emotionalState":"NEUTRAL"}'
+                arguments: '{"message":"Draft","confidence":0.69,"emotionalState":"NEUTRAL","knowledgeGroundingDecision":"NOT_APPLICABLE"}'
               }
             ]
           };
@@ -259,7 +269,7 @@ describe('AgentCore', () => {
               {
                 callId: 'reply-call',
                 name: 'reply',
-                arguments: '{"message":"Your Case is in review.","confidence":0.7,"emotionalState":"NEUTRAL"}'
+                arguments: '{"message":"Your Case is in review.","confidence":0.7,"emotionalState":"NEUTRAL","knowledgeGroundingDecision":"NOT_APPLICABLE"}'
               }
             ]
           };
@@ -289,7 +299,7 @@ describe('AgentCore', () => {
               {
                 callId: 'reply-call',
                 name: 'reply',
-                arguments: '{"message":"I am sorry this has been difficult.","confidence":0.99,"emotionalState":"FRUSTRATED"}'
+                arguments: '{"message":"I am sorry this has been difficult.","confidence":0.99,"emotionalState":"FRUSTRATED","knowledgeGroundingDecision":"NOT_APPLICABLE"}'
               }
             ]
           };

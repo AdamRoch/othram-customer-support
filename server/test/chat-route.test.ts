@@ -17,7 +17,8 @@ const model: AgentModel = {
           arguments: JSON.stringify({
             message: `You said: ${request.messages.at(-1)?.content}`,
             confidence: 0.9,
-            emotionalState: 'NEUTRAL'
+            emotionalState: 'NEUTRAL',
+            knowledgeGroundingDecision: 'NOT_APPLICABLE'
           })
         }
       ]
