@@ -5,6 +5,40 @@ import {
   KNOWLEDGE_NO_RESULTS_MESSAGE
 } from '../src/agent-core/tools/search-knowledge.js';
 import type { KnowledgeSearchService } from '../src/knowledge/search.js';
+import type { AgentModel, AgentModelRequest, AgentTool } from '../src/agent-core/core.js';
+
+function withGroundingDecision(
+  model: AgentModel,
+  decision: 'REQUIRED' | 'NOT_APPLICABLE'
+): AgentModel {
+  return {
+    async generate(request: AgentModelRequest) {
+      if (request.tools.length === 1 && request.tools[0]?.name === 'decide_knowledge_grounding') {
+        return {
+          responseId: 'response-grounding-decision',
+          outputText: '',
+          toolCalls: [
+            {
+              callId: 'grounding-decision-call',
+              name: 'decide_knowledge_grounding',
+              arguments: JSON.stringify({ decision })
+            }
+          ]
+        };
+      }
+      return model.generate(request);
+    }
+  };
+}
+
+function createCore(
+  model: AgentModel,
+  createId: () => string,
+  tools: AgentTool[],
+  decision: 'REQUIRED' | 'NOT_APPLICABLE' = 'REQUIRED'
+) {
+  return new AgentCore(withGroundingDecision(model, decision), createId, tools);
+}
 
 function sequentialIds(...ids: string[]) {
   return () => {
@@ -54,7 +88,7 @@ function modelThatSearchesThenReplies(reply: string) {
 describe('search_knowledge Agent Tool', () => {
   it('allows normal case and off-topic replies without search when they declare grounding not applicable', async () => {
     const search = vi.fn(async () => []);
-    const core = new AgentCore(
+    const core = createCore(
       {
         async generate(request) {
           const offTopic = request.messages.at(-1)?.content.includes('grant') ?? false;
@@ -79,7 +113,8 @@ describe('search_knowledge Agent Tool', () => {
         }
       },
       sequentialIds('case-conversation', 'case-turn', 'off-topic-conversation', 'off-topic-turn'),
-      [createSearchKnowledgeTool({ search } as KnowledgeSearchService)]
+      [createSearchKnowledgeTool({ search } as KnowledgeSearchService)],
+      'NOT_APPLICABLE'
     );
 
     await expect(core.runTurn('Where is my Case?')).resolves.toMatchObject({ reply: 'Your Case is in review.' });
@@ -102,7 +137,7 @@ describe('search_knowledge Agent Tool', () => {
         similarity: 0.97
       }
     ]);
-    const core = new AgentCore(
+    const core = createCore(
       modelThatSearchesThenReplies(
         'Permission is granted for your requested use of the Othram-provided media. [Media Permission Policy §Policy]'
       ),
@@ -136,7 +171,7 @@ describe('search_knowledge Agent Tool', () => {
   });
 
   it('requires a source citation for an evidence packaging answer', async () => {
-    const core = new AgentCore(
+    const core = createCore(
       modelThatSearchesThenReplies(
         'Package each item separately, record identifiers and custodians, and complete chain-of-custody documentation. [Evidence Submission Standard Operating Procedure §Before shipment]'
       ),
@@ -167,7 +202,7 @@ describe('search_knowledge Agent Tool', () => {
   });
 
   it('fails closed if a grounded reply omits the retrieved citation', async () => {
-    const core = new AgentCore(
+    const core = createCore(
       modelThatSearchesThenReplies('Yes, you may use the photo.'),
       sequentialIds('conversation-1', 'turn-1'),
       [
@@ -196,7 +231,7 @@ describe('search_knowledge Agent Tool', () => {
   });
 
   it('fails closed if the model replies without searching', async () => {
-    const core = new AgentCore(
+    const core = createCore(
       {
         async generate() {
           return {
@@ -232,8 +267,39 @@ describe('search_knowledge Agent Tool', () => {
     );
   });
 
+  it('rejects a reply that contradicts the independent grounding decision', async () => {
+    const core = createCore(
+      {
+        async generate() {
+          return {
+            responseId: 'response-reply',
+            outputText: '',
+            toolCalls: [
+              {
+                callId: 'reply-call',
+                name: 'reply',
+                arguments: JSON.stringify({
+                  message: 'You may use the photo.',
+                  confidence: 0.9,
+                  emotionalState: 'NEUTRAL',
+                  knowledgeGroundingDecision: 'NOT_APPLICABLE'
+                })
+              }
+            ]
+          };
+        }
+      },
+      sequentialIds('conversation-1', 'turn-1'),
+      [createSearchKnowledgeTool({ async search() { return []; } })]
+    );
+
+    await expect(core.runTurn('Can I use an Othram photo?')).rejects.toThrow(
+      'must match the independent turn decision'
+    );
+  });
+
   it('returns an honest specialist offer when retrieval has no results', async () => {
-    const core = new AgentCore(
+    const core = createCore(
       modelThatSearchesThenReplies(KNOWLEDGE_NO_RESULTS_MESSAGE),
       sequentialIds('conversation-1', 'turn-1'),
       [
@@ -262,7 +328,7 @@ describe('search_knowledge Agent Tool', () => {
   });
 
   it('requires the no-results specialist offer verbatim', async () => {
-    const core = new AgentCore(
+    const core = createCore(
       modelThatSearchesThenReplies(`${KNOWLEDGE_NO_RESULTS_MESSAGE} Is there anything else?`),
       sequentialIds('conversation-1', 'turn-1'),
       [
@@ -281,7 +347,7 @@ describe('search_knowledge Agent Tool', () => {
 
   it('delivers the no-results offer while preserving automatic escalation', async () => {
     let calls = 0;
-    const core = new AgentCore(
+    const core = createCore(
       {
         async generate() {
           calls += 1;
@@ -335,7 +401,7 @@ describe('search_knowledge Agent Tool', () => {
 
   it('delivers the canonical no-results offer before an explicit escalation', async () => {
     let calls = 0;
-    const core = new AgentCore(
+    const core = createCore(
       {
         async generate() {
           calls += 1;
@@ -371,32 +437,41 @@ describe('search_knowledge Agent Tool', () => {
 
     expect(result.reply).toBe(KNOWLEDGE_NO_RESULTS_MESSAGE);
     expect(result.events.map((event) => event.type).slice(-2)).toEqual(['reply_created', 'escalated']);
+    expect(result.events.find((event) => event.type === 'reply_created')).toMatchObject({
+      message: KNOWLEDGE_NO_RESULTS_MESSAGE,
+      knowledgeGroundingDecision: 'REQUIRED'
+    });
     expect(result.events.find((event) => event.type === 'escalated')).toMatchObject({
       reason: 'OUTSIDE_STANDARD_PROCEDURES'
     });
   });
 
-  it('validates a reply that appears before its search in the same tool-call batch', async () => {
-    const core = new AgentCore(
+  it('requires a later grounded reply when reply appears before search in the same batch', async () => {
+    let calls = 0;
+    const core = createCore(
       {
         async generate() {
-          return {
-            responseId: 'response-1',
-            outputText: '',
-            toolCalls: [
-              {
-                callId: 'reply-call',
-                name: 'reply',
-                arguments: JSON.stringify({
-                  message: 'Media may be used. [Media Permission Policy §Policy]',
-                  confidence: 0.9,
-                  emotionalState: 'NEUTRAL',
-                  knowledgeGroundingDecision: 'REQUIRED'
-                })
-              },
-              { callId: 'search-call', name: 'search_knowledge', arguments: '{"query":"media"}' }
-            ]
+          calls += 1;
+          const replyCall = {
+            callId: `reply-call-${calls}`,
+            name: 'reply',
+            arguments: JSON.stringify({
+              message: 'Media may be used. [Media Permission Policy §Policy]',
+              confidence: 0.9,
+              emotionalState: 'NEUTRAL',
+              knowledgeGroundingDecision: 'REQUIRED'
+            })
           };
+          return calls === 1
+            ? {
+                responseId: 'response-search',
+                outputText: '',
+                toolCalls: [
+                  replyCall,
+                  { callId: 'search-call', name: 'search_knowledge', arguments: '{"query":"media"}' }
+                ]
+              }
+            : { responseId: 'response-reply', outputText: '', toolCalls: [replyCall] };
         }
       },
       sequentialIds('conversation-1', 'turn-1'),
@@ -418,6 +493,7 @@ describe('search_knowledge Agent Tool', () => {
     await expect(core.runTurn('Can I use media?')).resolves.toMatchObject({
       reply: 'Media may be used. [Media Permission Policy §Policy]'
     });
+    expect(calls).toBe(2);
   });
 
   it('uses the latest search outcome when FOUND is followed by NO_RESULTS', async () => {
@@ -425,7 +501,7 @@ describe('search_knowledge Agent Tool', () => {
     let calls = 0;
 
     // The first model response performs two searches; the second produces the terminal reply.
-    const twoSearchesCore = new AgentCore(
+    const twoSearchesCore = createCore(
       {
         async generate() {
           calls += 1;

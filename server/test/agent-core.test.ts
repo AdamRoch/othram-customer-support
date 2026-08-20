@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { AgentCore } from '../src/agent-core/core.js';
+import { AgentCore, ESCALATION_ACKNOWLEDGMENT_MESSAGE } from '../src/agent-core/core.js';
 import { escalationReasons } from '@othram/shared';
 import type {
   AgentModel,
@@ -105,7 +105,8 @@ describe('AgentCore', () => {
           conversationId: 'conversation-1',
           turnId: 'turn-1',
           sequence: 5,
-          message: 'Reply 1'
+          message: 'Reply 1',
+          knowledgeGroundingDecision: 'NOT_APPLICABLE'
         }
       ]
     });
@@ -210,7 +211,11 @@ describe('AgentCore', () => {
 
       const result = await core.runTurn('Please help.');
       const escalation = result.events.find((event) => event.type === 'escalated');
-      expect(result.reply).toBeNull();
+      expect(result.reply).toBe(ESCALATION_ACKNOWLEDGMENT_MESSAGE);
+      expect(result.events.find((event) => event.type === 'reply_created')).toMatchObject({
+        message: ESCALATION_ACKNOWLEDGMENT_MESSAGE,
+        knowledgeGroundingDecision: 'NOT_APPLICABLE'
+      });
       expect(escalation).toMatchObject({
         reason,
         summary: 'A human decision is required.',
@@ -243,13 +248,17 @@ describe('AgentCore', () => {
     );
 
     const result = await core.runTurn('Where is my Case?');
-    expect(result.reply).toBeNull();
+    expect(result.reply).toBe(ESCALATION_ACKNOWLEDGMENT_MESSAGE);
+    expect(result.events.find((event) => event.type === 'reply_created')).toMatchObject({
+      knowledgeGroundingDecision: 'NOT_APPLICABLE'
+    });
     expect(result.events.map((event) => event.type)).toEqual([
       'turn_started',
       'tool_called',
       'tool_completed',
       'confidence_recorded',
       'customer_emotion_recorded',
+      'reply_created',
       'escalated'
     ]);
     expect(result.events.find((event) => event.type === 'escalated')).toMatchObject({
@@ -309,7 +318,7 @@ describe('AgentCore', () => {
     );
 
     const result = await core.runTurn('This delay is unacceptable.');
-    expect(result.reply).toBeNull();
+    expect(result.reply).toBe(ESCALATION_ACKNOWLEDGMENT_MESSAGE);
     expect(result.events.filter((event) => event.type === 'customer_emotion_recorded')).toHaveLength(1);
     expect(result.events.find((event) => event.type === 'escalated')).toMatchObject({
       reason: 'CUSTOMER_FRUSTRATED',

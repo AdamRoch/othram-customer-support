@@ -162,6 +162,7 @@ export type AgentEvent =
       turnId: string;
       sequence: number;
       message: string;
+      knowledgeGroundingDecision: 'REQUIRED' | 'NOT_APPLICABLE';
     }
   | {
       type: 'confidence_recorded';

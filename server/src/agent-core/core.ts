@@ -88,6 +88,9 @@ const knowledgeGroundingDecisions: readonly KnowledgeGroundingDecision[] = [
   'NOT_APPLICABLE'
 ];
 
+export const ESCALATION_ACKNOWLEDGMENT_MESSAGE =
+  "I'm connecting you with a specialist who can help. They'll review your request and follow up.";
+
 interface EscalationArguments {
   reason: EscalationReason;
   summary: string;
@@ -187,6 +190,39 @@ function createReplyTool(): AgentTool {
   };
 }
 
+function createKnowledgeGroundingDecisionTool(): AgentTool {
+  return {
+    definition: {
+      type: 'function',
+      name: 'decide_knowledge_grounding',
+      description:
+        'Classify whether this Customer turn asks for Othram policy or process facts and therefore requires knowledge grounding.',
+      parameters: {
+        type: 'object',
+        properties: {
+          decision: { type: 'string', enum: knowledgeGroundingDecisions }
+        },
+        required: ['decision'],
+        additionalProperties: false
+      },
+      strict: true
+    },
+    async execute(argumentsValue) {
+      if (
+        typeof argumentsValue !== 'object' ||
+        argumentsValue === null ||
+        Array.isArray(argumentsValue) ||
+        !knowledgeGroundingDecisions.includes(
+          (argumentsValue as Record<string, unknown>).decision as KnowledgeGroundingDecision
+        )
+      ) {
+        throw new Error('The grounding decision tool requires a supported decision.');
+      }
+      return { output: { recorded: true } };
+    }
+  };
+}
+
 function assertReplyMeetsRequirements(
   message: string,
   latestSearchRequirement: ReplyRequirement | undefined,
@@ -238,6 +274,8 @@ export class AgentCore {
   private readonly conversations = new Map<string, AgentMessage[]>();
   private readonly conversationTails = new Map<string, Promise<void>>();
   private readonly tools: Map<string, AgentTool>;
+  private readonly groundingDecisionTool = createKnowledgeGroundingDecisionTool();
+  private readonly hasKnowledgeSearch: boolean;
 
   constructor(
     private readonly model: AgentModel,
@@ -255,6 +293,7 @@ export class AgentCore {
     this.tools = new Map(
       [createReplyTool(), createEscalateTool(), ...tools].map((tool) => [tool.definition.name, tool])
     );
+    this.hasKnowledgeSearch = this.tools.has('search_knowledge');
   }
 
   async runTurn(message: string, conversationId?: string): Promise<ChatResponse> {
@@ -296,12 +335,20 @@ export class AgentCore {
     let previousResponseId: string | undefined;
     let toolOutputs: AgentToolOutput[] | undefined;
     let latestSearchRequirement: ReplyRequirement | undefined;
+    let turnGroundingDecision: KnowledgeGroundingDecision | undefined = this.hasKnowledgeSearch
+      ? undefined
+      : 'NOT_APPLICABLE';
 
     for (let step = 0; step < 8; step += 1) {
+      const availableTools = turnGroundingDecision
+        ? [...this.tools.values()].map((tool) => tool.definition)
+        : [this.groundingDecisionTool.definition];
       const response = await this.model.generate({
-        instructions: AGENT_SYSTEM_PROMPT,
+        instructions: turnGroundingDecision
+          ? AGENT_SYSTEM_PROMPT
+          : `${AGENT_SYSTEM_PROMPT}\n\nBefore taking any other action, classify this turn by calling decide_knowledge_grounding. Use REQUIRED for Othram policy or process questions and NOT_APPLICABLE for Case-specific, conversational, or off-topic turns.`,
         messages,
-        tools: [...this.tools.values()].map((tool) => tool.definition),
+        tools: availableTools,
         previousResponseId,
         toolOutputs
       });
@@ -309,11 +356,51 @@ export class AgentCore {
       if (response.toolCalls.length === 0) {
         throw new Error('Agent Core requires a reply tool call before completing a turn.');
       }
+      if (!turnGroundingDecision) {
+        if (
+          response.toolCalls.length !== 1 ||
+          response.toolCalls[0]?.name !== this.groundingDecisionTool.definition.name
+        ) {
+          throw new Error('Agent Core requires an independent knowledge-grounding decision first.');
+        }
+
+        const call = response.toolCalls[0];
+        const argumentsValue = parseArguments(call);
+        const decision = (argumentsValue as Record<string, unknown>).decision;
+        await this.groundingDecisionTool.execute(argumentsValue);
+        turnGroundingDecision = decision as KnowledgeGroundingDecision;
+        events.push(
+          {
+            type: 'tool_called',
+            conversationId: id,
+            turnId,
+            sequence: events.length,
+            callId: call.callId,
+            toolName: call.name,
+            arguments: argumentsValue
+          },
+          {
+            type: 'tool_completed',
+            conversationId: id,
+            turnId,
+            sequence: events.length + 1,
+            callId: call.callId,
+            toolName: call.name,
+            result: { recorded: true }
+          }
+        );
+        previousResponseId = response.responseId;
+        toolOutputs = [{ callId: call.callId, output: JSON.stringify({ recorded: true }) }];
+        continue;
+      }
       if (response.toolCalls.filter((call) => call.name === 'reply' || call.name === 'escalate').length > 1) {
         throw new Error('Agent Core accepts exactly one reply or escalation action per turn.');
       }
 
       const nextOutputs: AgentToolOutput[] = [];
+      const defersTerminalAction =
+        response.toolCalls.some((call) => call.name === 'search_knowledge') &&
+        response.toolCalls.some((call) => call.name === 'reply' || call.name === 'escalate');
       let reply: { message: string; arguments: ReplyArguments } | undefined;
       let escalation: EscalationArguments | undefined;
       for (const call of response.toolCalls) {
@@ -336,7 +423,14 @@ export class AgentCore {
         const replyArguments = call.name === 'reply' ? parseReplyArguments(argumentsValue) : undefined;
         const escalationArguments =
           call.name === 'escalate' ? parseEscalationArguments(argumentsValue) : undefined;
-        const result = await tool.execute(argumentsValue);
+        if (call.name === 'search_knowledge' && turnGroundingDecision !== 'REQUIRED') {
+          throw new Error('A knowledge search conflicts with this turn\'s NOT_APPLICABLE decision.');
+        }
+        const terminalActionDeferred =
+          defersTerminalAction && (call.name === 'reply' || call.name === 'escalate');
+        const result: AgentToolResult = terminalActionDeferred
+          ? { output: { accepted: false, reason: 'A later response is required after knowledge search.' } }
+          : await tool.execute(argumentsValue);
         events.push({
           type: 'tool_completed',
           conversationId: id,
@@ -351,8 +445,10 @@ export class AgentCore {
           latestSearchRequirement = result.replyRequirement;
         }
 
-        const emotionalState = replyArguments?.emotionalState ?? escalationArguments?.emotionalState;
-        if (replyArguments) {
+        const emotionalState = terminalActionDeferred
+          ? undefined
+          : replyArguments?.emotionalState ?? escalationArguments?.emotionalState;
+        if (replyArguments && !terminalActionDeferred) {
           events.push({
             type: 'confidence_recorded',
             conversationId: id,
@@ -371,11 +467,11 @@ export class AgentCore {
           });
         }
 
-        if (escalationArguments) {
+        if (escalationArguments && !terminalActionDeferred) {
           escalation = escalationArguments;
         }
 
-        if (result.reply) {
+        if (result.reply && !terminalActionDeferred) {
           if (reply !== undefined) {
             throw new Error('Agent Core received multiple reply tool calls in one step.');
           }
@@ -385,31 +481,63 @@ export class AgentCore {
         }
       }
 
+      if (defersTerminalAction) {
+        previousResponseId = response.responseId;
+        toolOutputs = nextOutputs;
+        continue;
+      }
+
       if (reply !== undefined || escalation !== undefined) {
+        if (reply && reply.arguments.knowledgeGroundingDecision !== turnGroundingDecision) {
+          throw new Error('The reply grounding decision must match the independent turn decision.');
+        }
+        if (turnGroundingDecision === 'REQUIRED' && !latestSearchRequirement && escalation) {
+          throw new Error('A terminal action requires a completed knowledge search.');
+        }
         const automaticEscalationReason =
           reply?.arguments.emotionalState === 'FRUSTRATED'
             ? 'CUSTOMER_FRUSTRATED'
             : reply !== undefined && reply.arguments.confidence < this.config.confidenceThreshold
               ? 'LOW_CONFIDENCE'
               : undefined;
+        const willEscalate = escalation !== undefined || automaticEscalationReason !== undefined;
+        if (
+          latestSearchRequirement?.requiredMessage &&
+          reply &&
+          reply.message !== latestSearchRequirement.requiredMessage
+        ) {
+          throw new Error('A knowledge search with no results requires the honest no-results response.');
+        }
         const finalReply = latestSearchRequirement?.requiredMessage
-          ? reply?.message ?? latestSearchRequirement.requiredMessage
-          : automaticEscalationReason
-            ? undefined
-            : reply?.message;
+          ? {
+              message: latestSearchRequirement.requiredMessage,
+              knowledgeGroundingDecision: 'REQUIRED' as const
+            }
+          : willEscalate
+            ? {
+                message: ESCALATION_ACKNOWLEDGMENT_MESSAGE,
+                knowledgeGroundingDecision: 'NOT_APPLICABLE' as const
+              }
+            : reply
+              ? {
+                  message: reply.message,
+                  knowledgeGroundingDecision: reply.arguments.knowledgeGroundingDecision
+                }
+              : undefined;
 
         if (finalReply !== undefined) {
           assertReplyMeetsRequirements(
-            finalReply,
-            latestSearchRequirement,
-            reply?.arguments.knowledgeGroundingDecision ?? 'NOT_APPLICABLE'
+            finalReply.message,
+            finalReply.knowledgeGroundingDecision === 'REQUIRED' ? latestSearchRequirement : undefined,
+            finalReply.knowledgeGroundingDecision
           );
           events.push({
             type: 'reply_created',
             conversationId: id,
             turnId,
             sequence: events.length,
-            message: finalReply
+            message: finalReply.message,
+            knowledgeGroundingDecision: finalReply.knowledgeGroundingDecision
           });
         }
 
@@ -437,9 +565,9 @@ export class AgentCore {
         }
         this.conversations.set(id, [
           ...messages,
-          ...(finalReply === undefined ? [] : [{ role: 'assistant' as const, content: finalReply }])
+          ...(finalReply === undefined ? [] : [{ role: 'assistant' as const, content: finalReply.message }])
         ]);
-        return { conversationId: id, reply: finalReply ?? null, events };
+        return { conversationId: id, reply: finalReply?.message ?? null, events };
       }
 
       previousResponseId = response.responseId;
