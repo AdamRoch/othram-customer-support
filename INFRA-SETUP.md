@@ -1,15 +1,16 @@
 # INFRA-SETUP — manual steps only a human can do
 
 Everything agents need but cannot create themselves: accounts, API keys,
-dashboard settings, local tooling. Do Part 1 before agents reach the vendor
-smoke-test spike ticket — it and every channel ticket consume these values;
-they never create them.
+dashboard settings, local tooling. Part 1 covers the current provider-limited
+delivery under ADR 0008. Real Zendesk setup is unresolved future
+administrator-owned work gated by OTHRM-29 and is not required to run the
+Local Ticket System.
 
 Referenced by the vendor smoke-test spike ticket and the channel tickets.
 
 ---
 
-## Part 1 — Before the spike ticket runs (blocking)
+## Part 1 — Current provider-limited delivery
 
 ### 1. OpenAI
 
@@ -31,7 +32,12 @@ Referenced by the vendor smoke-test spike ticket and the channel tickets.
 - [ ] Verify: `curl https://api.elevenlabs.io/v1/voices -H "xi-api-key: $ELEVENLABS_API_KEY"`
       returns your voices.
 
-### 3. Zendesk trial
+### 3. Future Zendesk adapter (OTHRM-29, not current setup)
+
+This section preserves the target administrator setup for OTHRM-29. Do not
+treat it as a prerequisite or evidence for the current delivery. The existing
+trial cannot perform Ticketing operations, and the repository does not provide
+a Zendesk provisioning command.
 
 - [ ] Sign up for a Zendesk Suite trial → note your subdomain
       (`<subdomain>.zendesk.com`) → save as `ZENDESK_SUBDOMAIN`.
@@ -43,8 +49,8 @@ Referenced by the vendor smoke-test spike ticket and the channel tickets.
       one-time Secret as `ZENDESK_CLIENT_SECRET`.
 - [ ] Note the support address (`support@<subdomain>.zendesk.com`) — this is
       where demo emails are sent to create tickets.
-- [ ] Do **not** create groups, tags, or macros manually — the
-      `pnpm zendesk:setup` ticket provisions them via API.
+- [ ] Do not create groups, tags, or macros until OTHRM-29 defines and validates
+      the adapter's provisioning path.
 - [ ] Verify the credentials with the read-only check below. It exchanges the
       client credentials on the server-to-server token endpoint for a 10-minute,
       read-only access token, keeps that token in shell memory, prints only a
@@ -77,41 +83,39 @@ Zendesk derives a client-credentials token's permissions from the OAuth client
 owner. Do not send an explicit `scope` unless the trial has confirmed that scope
 is accepted. Do not add `--verbose`, echo either credential, print the token
 response, or save the access token to disk.
-- [ ] **Timing note:** trials expire (~14 days). If it lapses mid-build, create
-      a fresh trial, update the env values, and re-run `pnpm zendesk:setup` —
-      scripted provisioning exists precisely so this is a 2-minute recovery.
+- [ ] **Timing note:** trials expire. Start or renew a trial only when an
+      administrator is executing OTHRM-29.
 
 ### 4. Local tooling
 
 - [ ] Node.js 20+ (`node --version`)
 - [ ] pnpm (`pnpm --version`; `npm install -g pnpm` if missing)
-- [ ] jq (`jq --version`) — safely extracts the temporary Zendesk access token
-      during credential verification
+- [ ] jq (`jq --version`) — needed only for the future OTHRM-29 credential check
 - [ ] Docker Desktop, running (`docker info` succeeds) — runs Postgres+pgvector
 - [ ] git (`git --version`)
 
 ### 5. Hand over the secrets
 
-- [ ] Create `SECRETS.local.env` in this directory with:
+- [ ] Create `SECRETS.local.env` in this directory with the current vendor values:
 
 ```
 OPENAI_API_KEY=
 ELEVENLABS_API_KEY=
 ELEVENLABS_VOICE_ID=
-ZENDESK_SUBDOMAIN=
-ZENDESK_CLIENT_ID=
-ZENDESK_CLIENT_SECRET=
 ```
 
 Agents wire these into the real `.env` (the scaffold ticket creates
 `.env.example`), keep this file out of git, and never hard-code values.
 
+An administrator executing OTHRM-29 supplies the documented Zendesk values at
+that time. They are not current Local Ticket System configuration.
+
 ---
 
-## Part 2 — Optional, only if demoing webhook ingestion
+## Part 2 — Future Zendesk webhook work (OTHRM-29)
 
-Polling is the default ingestion path and needs nothing here. Only if you want
-the real-time webhook demo:
+The current Local Ticket System uses cursor reads and needs nothing here. These
+steps apply only after OTHRM-29 delivers and validates a real Zendesk adapter:
 
 - [ ] Create an ngrok (or similar) account and install the CLI.
 - [ ] When the server runs: `ngrok http <server-port>`, then point a Zendesk
@@ -133,4 +137,4 @@ the real-time webhook demo:
   modest at this scale.
 - ElevenLabs: STT minutes + TTS characters meter against plan credits; the
   demo scenarios are short, but repeated eval/dev runs add up — watch usage.
-- Zendesk trial: free until expiry; see the timing note above.
+- Future Zendesk trial: administrator-owned cost and expiry management under OTHRM-29.

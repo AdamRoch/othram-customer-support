@@ -36,5 +36,11 @@ generated audio, or Zendesk ticket data.
 | ElevenLabs v3 TTS audio tags | FAIL | The configured voice was rejected before v3 could render or play the `[calm]` and `[chuckles]` comparison. Follow-up: OTHRM-30. |
 | Zendesk identity + ticket create/read | FAIL | The client-credentials grant minted a token, but the read-only identity request returned HTTP 403, so no test ticket was created. Real Zendesk validation remains blocked by the trial permissions. |
 
-OTHRM-10 remains blocked until the two provider setup issues are resolved and
-the command produces four passes.
+Real Zendesk validation remains unresolved until the trial permissions are
+corrected and the command can create and read a disposable ticket. Under ADR
+0008, the provider-limited local delivery proceeds with the PostgreSQL-backed
+Local Ticket System behind TicketGateway. Local polling and eval results are
+not Zendesk validation and must not be described as such.
+
+The ElevenLabs v3 voice issue remains separate from the Local Ticket System
+decision.
