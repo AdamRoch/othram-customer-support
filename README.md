@@ -160,6 +160,8 @@ proof’s Compose or database exports. It requires a private `OPENAI_API_KEY` in
 ```sh
 # Make the normal development target explicit if this is not a fresh shell.
 unset COMPOSE_PROJECT_NAME POSTGRES_PORT RUNTIME_DATABASE_URL TEST_DATABASE_URL EVAL_DATABASE_URL
+unset OPENAI_API_KEY ELEVENLABS_API_KEY ELEVENLABS_VOICE_ID
+unset ZENDESK_SUBDOMAIN ZENDESK_CLIENT_ID ZENDESK_CLIENT_SECRET
 export DATABASE_URL='postgresql://othram:othram@127.0.0.1:5432/othram'
 
 # Start a normal development database (not the eval or test database).
