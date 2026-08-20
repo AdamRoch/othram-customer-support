@@ -1,6 +1,6 @@
 # Submit a Zendesk-first vertical slice
 
-Status: Accepted for the initial submission
+Status: Superseded for the provider-limited delivery by ADR 0008
 
 ## Context
 

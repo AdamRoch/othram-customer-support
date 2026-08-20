@@ -116,8 +116,11 @@ pnpm workspaces.
   cursor. Agent replies and internal notes never enter the requester stream.
 - **Customer identity:** matches the Ticket requester email to a Customer in the
   Case System.
-- **Actions:** post public reply, post internal note, set tags, assign group,
-  set status, resolve ticket.
+- **Actions:** post public reply, post internal note, add normalized lowercase
+  tags, assign an exact supported team, and set an exact supported status.
+- **Retry contract:** mutations to an existing Ticket require a per-Ticket
+  idempotency key. The same operation and input replay the original result;
+  reusing the key with different input fails.
 - Maintains ticket threading/history (full conversation context to the core).
 
 ### 5.3 Voice channel adapter (`server/src/channels/voice/`)

@@ -19,16 +19,21 @@ For this provider-limited delivery, the ticket channel will depend on a narrow
 `TicketGateway` port. The local implementation is the **Local Ticket System**:
 a durable PostgreSQL-backed ticket service that supports cursor reads,
 requester and thread retrieval, public replies, internal notes, tags, team
-assignment, status changes, and idempotent processing.
+assignment, status changes, and explicit local Ticket and requester-comment
+intake. Tags are normalized to lowercase. Mutating an existing Ticket requires
+a per-Ticket idempotency key: retrying the same operation and input returns the
+original result, while reusing the key with different input fails.
 
 Local polling and ticket evals use the Local Ticket System through this port.
 A future Zendesk adapter may implement the same port after the provider access
 issue is resolved. The Agent Core and ticket workflow must not depend on
 Zendesk-specific types outside that adapter.
 
-This ADR supersedes the real-Zendesk requirement in ADR 0001 and ADR 0007
-only for this provider-limited delivery. It does not replace the long-term
-Zendesk integration decision, and it does not resolve the Zendesk trial issue.
+This ADR supersedes the real-Zendesk requirement in ADR 0001 and ADR 0007, the
+Zendesk-specific adapter clause in ADR 0002, and the Zendesk provisioning
+requirement in ADR 0006 only for this provider-limited delivery. It does not
+replace the long-term Zendesk integration decision, and it does not resolve the
+Zendesk trial issue.
 
 ## Consequences
 
