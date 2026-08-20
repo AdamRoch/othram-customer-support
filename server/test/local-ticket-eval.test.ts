@@ -43,6 +43,7 @@ describeWithDatabase('local ticket eval', () => {
   async function expectNoEvalFixtures(): Promise<void> {
     if (!database) throw new Error('TEST_DATABASE_URL was not configured.');
     expect(await database.db.select().from(localTickets).where(like(localTickets.subject, 'Eval %'))).toHaveLength(0);
+    expect(await database.db.select().from(localTicketRequesters).where(like(localTicketRequesters.email, 'eval.case+%@othram-demo.test'))).toHaveLength(0);
     expect(await database.db.select().from(ticketWorkItems)).toHaveLength(0);
     expect(await database.db.select().from(ticketIngestionCursors).where(like(ticketIngestionCursors.name, 'local-ticket-eval:%'))).toHaveLength(0);
     expect(await database.db.select().from(cases).where(like(cases.caseNumber, 'OTHRM-EVAL-%'))).toHaveLength(0);

@@ -19,6 +19,7 @@ import {
   customers,
   localTicketComments,
   localTicketIdempotency,
+  localTicketRequesters,
   localTickets,
   stageDurations,
   ticketIngestionCursors,
@@ -232,7 +233,12 @@ async function cleanupEvalCase(database: Database, caseNumber: string, caseEmail
   });
 }
 
-async function cleanupEvalTickets(database: Database, ticketIds: string[], cursorName: string): Promise<void> {
+async function cleanupEvalTickets(
+  database: Database,
+  ticketIds: string[],
+  cursorName: string,
+  requesterEmail: string
+): Promise<void> {
   await database.transaction(async (tx) => {
     for (const ticketId of ticketIds) {
       await tx.delete(ticketWorkItems).where(eq(ticketWorkItems.ticketId, ticketId));
@@ -240,6 +246,7 @@ async function cleanupEvalTickets(database: Database, ticketIds: string[], curso
       await tx.delete(localTicketComments).where(eq(localTicketComments.ticketId, ticketId));
       await tx.delete(localTickets).where(eq(localTickets.id, ticketId));
     }
+    await tx.delete(localTicketRequesters).where(eq(localTicketRequesters.email, requesterEmail));
     await tx.delete(ticketIngestionCursors).where(eq(ticketIngestionCursors.name, cursorName));
   });
 }
@@ -324,7 +331,7 @@ export async function runLocalTicketEval(options: RunLocalTicketEvalOptions): Pr
     if (scenarios.some((scenario) => !scenario.passed)) throw new Error('One or more local ticket eval scenarios failed.');
     return evalResult(scenarios);
   } finally {
-    await cleanupEvalTickets(options.database, ticketIds, cursorName);
+    await cleanupEvalTickets(options.database, ticketIds, cursorName, caseEmail);
     if (seeded) await cleanupEvalCase(options.database, caseNumber, caseEmail);
   }
 }
