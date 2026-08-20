@@ -77,9 +77,9 @@ const DEFAULT_CONFIG: AgentCoreConfig = { confidenceThreshold: 0.7 };
 export type KnowledgeGroundingDecision = 'REQUIRED' | 'NOT_APPLICABLE';
 
 /**
- * A policy boundary which classifies the Customer message before the replying
- * model is allowed to select tools. The reply model must only attest to this
- * decision, never make it.
+ * A policy boundary which classifies the latest Customer message using the
+ * full conversation before the replying model is allowed to select tools. The
+ * reply model must only attest to this decision, never make it.
  */
 export interface KnowledgeGroundingClassifier {
   classify(messages: readonly AgentMessage[]): Promise<KnowledgeGroundingDecision>;
