@@ -59,7 +59,8 @@ PostgreSQL. To have the running server process new requester comments, set
 `LOCAL_TICKET_POLLING_ENABLED=true` and provide `OPENAI_API_KEY`. The server
 polls immediately at startup and then uses `LOCAL_TICKET_POLL_INTERVAL_MS`,
 which defaults to 30 seconds. Each poll is non-overlapping, and server shutdown
-waits for the active poll before closing the database connection.
+waits for the active poll before closing the database connection. A second
+shutdown signal forces an immediate exit.
 
 The worker rebuilds Agent Core context from the Ticket's durable public thread,
 binds case lookup to the requester email stored on the Ticket, and persists a

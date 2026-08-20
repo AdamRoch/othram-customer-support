@@ -6,6 +6,7 @@ import { ticketIngestionCursors, ticketWorkItems } from '../../db/schema.js';
 import type { TicketGateway, TicketThread } from './gateway.js';
 
 type Database = ReturnType<typeof createDatabase>['db'];
+const RETRY_QUEUE_PENALTY = 100;
 
 export type TicketWorkStatus =
   | 'PENDING'
@@ -289,7 +290,10 @@ export class TicketPollingWorker {
               AND earlier.queue_order < ticket_work_items.queue_order
               AND earlier.status IN ('PENDING', 'LEASED', 'READY_TO_SEND', 'ESCALATION_PENDING')
           )
-        ORDER BY queue_order
+        -- A retry yields a bounded number of queue slots. This prevents both a
+        -- poison item from monopolizing the head and fresh traffic from
+        -- starving a transient failure forever.
+        ORDER BY queue_order + attempts::bigint * ${RETRY_QUEUE_PENALTY}::bigint, queue_order
         FOR UPDATE SKIP LOCKED
         LIMIT 1
       )

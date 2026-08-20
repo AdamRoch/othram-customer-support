@@ -1,4 +1,5 @@
 import { fileURLToPath } from 'node:url';
+import { eq } from 'drizzle-orm';
 import { migrate } from 'drizzle-orm/node-postgres/migrator';
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { AgentCore, type AgentModel, type AgentModelRequest, type AgentModelResponse } from '../src/agent-core/core.js';
@@ -253,6 +254,74 @@ describeWithDatabase('TicketPollingWorker', () => {
     expect((await gateway.getTicket(poison.id))?.status).toBe('open');
     expect((await gateway.getTicket(healthy.id))?.status).toBe('solved');
     expect((await gateway.getTicket(healthy.id))?.comments.at(-1)?.body).toBe('Healthy ticket reply.');
+  });
+
+  it('prioritizes never-attempted work ahead of failed items from a full earlier batch', async () => {
+    if (!database) throw new Error('TEST_DATABASE_URL was not configured.');
+    const gateway = new LocalTicketGateway(database.db);
+    for (let index = 1; index <= 2; index += 1) {
+      await gateway.createTicket({
+        requester: { name: `Poison ${index}`, email: `poison-${index}@othram-demo.test` },
+        subject: `Poison ticket ${index}`,
+        message: 'This item is poison.'
+      });
+    }
+    const healthy = await gateway.createTicket({
+      requester: { name: 'Healthy Requester', email: 'healthy@othram-demo.test' },
+      subject: 'Healthy ticket',
+      message: 'Please process this ticket.'
+    });
+    let now = new Date('2026-08-20T12:00:00.000Z');
+    const worker = new TicketPollingWorker({
+      database: database.db,
+      gateway,
+      createAgentCore: () => new AgentCore(new PoisonAwareModel()),
+      now: () => now,
+      leaseMs: 10,
+      pageSize: 100
+    });
+
+    await expect(worker.drain({ maxItems: 2 })).rejects.toThrow('Multiple ticket work items failed.');
+    now = new Date(now.getTime() + 11);
+    expect(await worker.drain({ maxItems: 1 })).toEqual({ enqueued: 0, processed: 1 });
+    expect((await gateway.getTicket(healthy.id))?.status).toBe('solved');
+  });
+
+  it('gives retries a bounded share while fresh work keeps arriving', async () => {
+    if (!database) throw new Error('TEST_DATABASE_URL was not configured.');
+    const gateway = new LocalTicketGateway(database.db);
+    const poison = await gateway.createTicket({
+      requester: { name: 'Poison Requester', email: 'poison@othram-demo.test' },
+      subject: 'Poison ticket',
+      message: 'This item is poison.'
+    });
+    let now = new Date('2026-08-20T12:00:00.000Z');
+    const worker = new TicketPollingWorker({
+      database: database.db,
+      gateway,
+      createAgentCore: () => new AgentCore(new PoisonAwareModel()),
+      now: () => now,
+      leaseMs: 10,
+      pageSize: 100
+    });
+
+    await expect(worker.drain({ maxItems: 1 })).rejects.toThrow('simulated model failure');
+    for (let index = 1; index <= 100; index += 1) {
+      await gateway.createTicket({
+        requester: { name: `Fresh ${index}`, email: `fresh-${index}@othram-demo.test` },
+        subject: `Fresh ticket ${index}`,
+        message: 'Please process this ticket.'
+      });
+    }
+    now = new Date(now.getTime() + 11);
+    await expect(worker.drain({ maxItems: 100 })).rejects.toThrow('simulated model failure');
+    const [poisonWork] = await database.db
+      .select()
+      .from(ticketWorkItems)
+      .where(eq(ticketWorkItems.ticketId, poison.id));
+    expect(poisonWork?.attempts).toBe(2);
+    const tickets = await database.db.select().from(localTickets);
+    expect(tickets.filter((ticket) => ticket.status === 'solved')).toHaveLength(99);
   });
 
   it('does not steal READY_TO_SEND work while its delivery lease is live', async () => {

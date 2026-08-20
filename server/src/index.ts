@@ -47,29 +47,42 @@ try {
     ...(knowledgeSearchService ? { knowledgeSearchService } : {})
   });
 
-  app.addHook('onClose', async () => {
-    await pollingLoop?.stop();
-    await database.close();
-  });
-
   let shuttingDown = false;
   const closeForSignal = async (signal: NodeJS.Signals) => {
-    if (shuttingDown) return;
+    if (shuttingDown) {
+      app.log.warn({ signal }, 'Forcing server shutdown after a second signal');
+      process.exit(1);
+    }
     shuttingDown = true;
     app.log.info({ signal }, 'Shutting down server');
     try {
       await app.close();
     } catch (error) {
       app.log.error({ err: error }, 'Server shutdown failed');
-      process.exitCode = 1;
+      process.exit(1);
     }
   };
-  process.once('SIGINT', () => void closeForSignal('SIGINT'));
-  process.once('SIGTERM', () => void closeForSignal('SIGTERM'));
+  const handleSigint = () => void closeForSignal('SIGINT');
+  const handleSigterm = () => void closeForSignal('SIGTERM');
+  process.on('SIGINT', handleSigint);
+  process.on('SIGTERM', handleSigterm);
+
+  app.addHook('onClose', async () => {
+    try {
+      await pollingLoop?.stop();
+    } finally {
+      try {
+        await database.close();
+      } finally {
+        process.off('SIGINT', handleSigint);
+        process.off('SIGTERM', handleSigterm);
+      }
+    }
+  });
 
   await app.listen({ port: 3001, host: '127.0.0.1' });
 
-  if (apiKey && knowledgeSearchService) {
+  if (!shuttingDown && apiKey && knowledgeSearchService) {
     const worker = new TicketPollingWorker({
       database: database.db,
       gateway: new LocalTicketGateway(database.db),
