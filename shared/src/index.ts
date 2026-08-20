@@ -103,3 +103,53 @@ export interface KnowledgeSearchBadRequestResponse {
   error: 'INVALID_KNOWLEDGE_SEARCH_QUERY';
   message: string;
 }
+
+export type AgentEvent =
+  | {
+      type: 'turn_started';
+      conversationId: string;
+      turnId: string;
+      sequence: number;
+      message: string;
+    }
+  | {
+      type: 'tool_called';
+      conversationId: string;
+      turnId: string;
+      sequence: number;
+      callId: string;
+      toolName: string;
+      arguments: unknown;
+    }
+  | {
+      type: 'tool_completed';
+      conversationId: string;
+      turnId: string;
+      sequence: number;
+      callId: string;
+      toolName: string;
+      result: unknown;
+    }
+  | {
+      type: 'reply_created';
+      conversationId: string;
+      turnId: string;
+      sequence: number;
+      message: string;
+    };
+
+export interface ChatRequest {
+  conversationId?: string;
+  message: string;
+}
+
+export interface ChatResponse {
+  conversationId: string;
+  reply: string;
+  events: AgentEvent[];
+}
+
+export interface ChatErrorResponse {
+  error: 'INVALID_CHAT_REQUEST' | 'CONVERSATION_NOT_FOUND';
+  message: string;
+}
