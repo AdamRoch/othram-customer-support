@@ -117,7 +117,9 @@ export const ticketIngestionCursors = pgTable('ticket_ingestion_cursors', {
 /**
  * The worker owns this state, while TicketGateway remains the authority for
  * ticket content.  Text is stored before a gateway write so retrying a crash
- * window uses the same idempotency key and never asks the model twice.
+ * window uses the same idempotency key and never asks the model twice. An
+ * escalation moves from ESCALATION_PENDING to terminal ESCALATED only after
+ * the gateway's atomic handoff succeeds.
  */
 export const ticketWorkItems = pgTable(
   'ticket_work_items',

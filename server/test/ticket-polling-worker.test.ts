@@ -23,7 +23,12 @@ const database = testDatabaseUrl ? createDatabase(testDatabaseUrl) : undefined;
 
 class ReplyModel implements AgentModel {
   readonly requests: AgentModelRequest[] = [];
-  constructor(private readonly escalation = false) {}
+  constructor(
+    private readonly escalation = false,
+    private readonly escalationInput: { reason: string; summary: string; team: string } = {
+      reason: 'CUSTOMER_REQUESTS_HUMAN', summary: 'Customer asked for a person.', team: 'General Support'
+    }
+  ) {}
   async generate(request: AgentModelRequest): Promise<AgentModelResponse> {
     this.requests.push(request);
     return {
@@ -33,7 +38,7 @@ class ReplyModel implements AgentModel {
         callId: `reply-${this.requests.length}`,
         name: this.escalation ? 'escalate' : 'reply',
         arguments: JSON.stringify(this.escalation ? {
-          reason: 'CUSTOMER_REQUESTS_HUMAN', summary: 'Customer asked for a person.', team: 'General Support', emotionalState: 'NEUTRAL'
+          ...this.escalationInput, emotionalState: 'NEUTRAL'
         } : {
           message: 'Computed case timeline reply.', confidence: 0.9, emotionalState: 'NEUTRAL', knowledgeGroundingDecision: 'NOT_APPLICABLE'
         })
@@ -96,10 +101,12 @@ describeWithDatabase('TicketPollingWorker', () => {
     escalation?: boolean;
     afterGatewayReply?: () => Promise<void> | void;
     beforeGatewayReply?: () => Promise<void> | void;
+    afterGatewayEscalation?: () => Promise<void> | void;
+    escalationInput?: { reason: string; summary: string; team: string };
   } = {}) {
     if (!database) throw new Error('TEST_DATABASE_URL was not configured.');
     const gateway = new LocalTicketGateway(database.db);
-    const model = new ReplyModel(input.escalation);
+    const model = new ReplyModel(input.escalation, input.escalationInput);
     let now = new Date('2026-08-20T12:00:00.000Z');
     const worker = new TicketPollingWorker({
       database: database.db,
@@ -108,7 +115,8 @@ describeWithDatabase('TicketPollingWorker', () => {
       now: () => now,
       leaseMs: 10,
       afterGatewayReply: input.afterGatewayReply,
-      beforeGatewayReply: input.beforeGatewayReply
+      beforeGatewayReply: input.beforeGatewayReply,
+      afterGatewayEscalation: input.afterGatewayEscalation
     });
     const ticket = await gateway.createTicket({
       requester: { name: 'Jordan Lee', email: 'jordan@othram-demo.test' },
@@ -381,18 +389,145 @@ describeWithDatabase('TicketPollingWorker', () => {
       .toHaveLength(1);
   });
 
-  it('ignores agent and internal updates, and parks core escalation without replying', async () => {
+  it('executes parked escalation before allowing later work for the same ticket', async () => {
     const { worker, gateway, ticket } = await setup({ escalation: true });
     await gateway.addInternalNote(ticket.id, { message: 'Staff note', idempotencyKey: 'note' });
     await gateway.addPublicReply(ticket.id, { message: 'Existing agent reply', idempotencyKey: 'reply' });
     await gateway.addRequesterComment(ticket.id, { message: 'A later question', idempotencyKey: 'later' });
     await worker.pollOnce();
     expect(await worker.processOne()).toBe('ESCALATION_PENDING');
-    expect(await worker.processOne()).toBeNull();
-    expect((await gateway.getTicket(ticket.id))?.comments.filter((comment) => comment.author === 'agent')).toHaveLength(2);
+    const parked = await database!.db.select().from(ticketWorkItems);
+    expect(parked.some((item) => item.status === 'ESCALATION_PENDING')).toBe(true);
+    expect(await worker.processOne()).toBe('ESCALATED');
+    const escalated = await gateway.getTicket(ticket.id);
+    expect(escalated).toMatchObject({ status: 'open', team: 'General Support' });
+    expect(escalated?.tags).toEqual(expect.arrayContaining(['ai-escalated', 'ai-escalated:customer-requests-human']));
+    expect(escalated?.comments.filter((comment) => comment.author === 'agent' && !comment.isPublic)).toHaveLength(2);
+    expect(escalated?.comments.filter((comment) => comment.author === 'agent' && comment.isPublic)
+      .map((comment) => comment.body)).toContain(
+        "I'm sorry this needs specialist review. I've routed your request to the appropriate Othram team for review."
+      );
     const work = await database!.db.select().from(ticketWorkItems);
-    expect(work.some((item) => item.status === 'ESCALATION_PENDING')).toBe(true);
+    expect(work.some((item) => item.status === 'ESCALATED')).toBe(true);
     expect(work.some((item) => item.status === 'PENDING')).toBe(true);
+  });
+
+  it('hydrates and executes legacy parked escalations from durable ticket history', async () => {
+    const { worker, gateway, model, ticket } = await setup({ escalation: true });
+    await worker.pollOnce();
+    expect(await worker.processOne()).toBe('ESCALATION_PENDING');
+    const [parked] = await database!.db.select().from(ticketWorkItems)
+      .where(eq(ticketWorkItems.ticketId, ticket.id));
+    await database!.db.update(ticketWorkItems).set({
+      escalation: {
+        reason: 'CUSTOMER_REQUESTS_HUMAN',
+        summary: 'Customer asked for a person.',
+        team: 'General Support'
+      }
+    }).where(eq(ticketWorkItems.id, parked!.id));
+    await gateway.addInternalNote(ticket.id, { message: 'Private future note.', idempotencyKey: 'private-future' });
+    await gateway.addRequesterComment(ticket.id, { message: 'Public future message.', idempotencyKey: 'public-future' });
+
+    expect(await worker.processOne()).toBe('ESCALATED');
+
+    const [recovered] = await database!.db.select().from(ticketWorkItems)
+      .where(eq(ticketWorkItems.id, parked!.id));
+    expect(recovered?.status).toBe('ESCALATED');
+    expect(recovered?.escalation).toMatchObject({
+      inboundCommentId: parked!.inboundCommentId,
+      turnId: `legacy-${parked!.id}`
+    });
+    const escalation = recovered?.escalation as { context: { body: string }[] };
+    expect(escalation.context.map((message) => message.body)).toEqual(['Where is case OTH-101?']);
+    expect(model.requests).toHaveLength(1);
+  });
+
+  it('captures only public context through the inbound message and retries an escalation crash without duplicates', async () => {
+    let failOnce = true;
+    const { worker, gateway, ticket, advance } = await setup({
+      escalation: true,
+      escalationInput: {
+        reason: 'TECHNICAL_PROBLEM', summary: 'Customer reports a DNA mismatch.', team: 'Technical Team'
+      },
+      afterGatewayEscalation: () => {
+        if (failOnce) {
+          failOnce = false;
+          throw new Error('simulated escalation crash');
+        }
+      }
+    });
+    await worker.pollOnce();
+    await database!.db.update(ticketWorkItems).set({ status: 'REPLIED' })
+      .where(eq(ticketWorkItems.ticketId, ticket.id));
+    await gateway.addPublicReply(ticket.id, { message: 'Earlier public answer.', idempotencyKey: 'earlier-public' });
+    await gateway.addInternalNote(ticket.id, { message: 'Never share this note.', idempotencyKey: 'internal-only' });
+    const inbound = await gateway.addRequesterComment(ticket.id, {
+      message: 'My DNA results appear mismatched.', idempotencyKey: 'mismatch'
+    });
+    await gateway.addRequesterComment(ticket.id, { message: 'Future customer message.', idempotencyKey: 'future' });
+    await worker.pollOnce();
+    expect(await worker.processOne()).toBe('ESCALATION_PENDING');
+    await expect(worker.processOne()).rejects.toThrow('simulated escalation crash');
+    advance();
+    expect(await worker.processOne()).toBe('ESCALATED');
+
+    const after = await gateway.getTicket(ticket.id);
+    const internal = after!.comments.find((comment) => !comment.isPublic && comment.body.includes('ai_escalation'))!;
+    const note = JSON.parse(internal.body) as { conversation: { commentId: string; body: string }[] };
+    expect(note.conversation.map((message) => message.body)).toEqual([
+      'Where is case OTH-101?', 'Earlier public answer.', 'My DNA results appear mismatched.'
+    ]);
+    expect(note.conversation.at(-1)?.commentId).toBe(inbound.comment.id);
+    expect(note.conversation.map((message) => message.body)).not.toContain('Never share this note.');
+    expect(note.conversation.map((message) => message.body)).not.toContain('Future customer message.');
+    expect(after!.comments.filter((comment) => !comment.isPublic && comment.body.includes('ai_escalation'))).toHaveLength(1);
+    expect(after!.comments.filter((comment) => comment.isPublic && comment.author === 'agent' &&
+      comment.body.includes('specialist review'))).toHaveLength(1);
+    const rows = await database!.db.select().from(ticketWorkItems).where(eq(ticketWorkItems.ticketId, ticket.id));
+    expect(rows.find((row) => row.inboundCommentId === inbound.comment.id)?.status).toBe('ESCALATED');
+  });
+
+  it('keeps billing questions on the grounded reply path but routes billing disputes to Billing', async () => {
+    if (!database) throw new Error('TEST_DATABASE_URL was not configured.');
+    const gateway = new LocalTicketGateway(database.db);
+    const question = await gateway.createTicket({
+      requester: { name: 'Jordan Lee', email: 'billing-question@othram-demo.test' },
+      subject: 'Invoice copy', message: 'Can I get a copy of my invoice?'
+    });
+    const answerModel = new ScriptedModel([
+      [{ callId: 'search', name: 'search_knowledge', arguments: JSON.stringify({ query: 'invoice copy' }) }],
+      [{ callId: 'reply', name: 'reply', arguments: JSON.stringify({
+        message: 'You can request an invoice copy. [Invoicing and Payment §Invoice copies]',
+        confidence: 0.95, emotionalState: 'NEUTRAL', knowledgeGroundingDecision: 'REQUIRED'
+      }) }]
+    ]);
+    const resolver = new TicketPollingWorker({
+      database: database.db, gateway,
+      createAgentCore: createTicketAgentCoreFactory({
+        model: answerModel,
+        lookupCase: { async lookupCase() { throw new Error('Case lookup was not expected.'); } },
+        knowledgeSearch: { async search() { return [{
+          content: 'You can request an invoice copy.', similarity: 0.98,
+          citation: { document: 'Invoicing and Payment', section: 'Invoice copies', category: 'policy', sourcePath: 'invoicing.md' }
+        }]; } },
+        knowledgeGroundingClassifier: { async classify() { return 'REQUIRED'; } }
+      })
+    });
+    expect(await resolver.drain()).toEqual({ enqueued: 1, processed: 1 });
+    expect((await gateway.getTicket(question.id))?.status).toBe('solved');
+
+    const dispute = await gateway.createTicket({
+      requester: { name: 'Jordan Lee', email: 'billing-dispute@othram-demo.test' },
+      subject: 'Disputed charge', message: 'I dispute this charge.'
+    });
+    const escalator = new TicketPollingWorker({
+      database: database.db, gateway,
+      createAgentCore: () => new AgentCore(new ReplyModel(true, {
+        reason: 'BILLING_DISPUTE', summary: 'Customer disputes a charge.', team: 'Billing'
+      }))
+    });
+    expect(await escalator.drain()).toEqual({ enqueued: 1, processed: 2 });
+    expect(await gateway.getTicket(dispute.id)).toMatchObject({ status: 'open', team: 'Billing' });
   });
 
   it('runs an immediate lifecycle-managed poll and waits for delivery on stop', async () => {

@@ -65,8 +65,12 @@ shutdown signal forces an immediate exit.
 The worker rebuilds Agent Core context from the Ticket's durable public thread,
 binds case lookup to the requester email stored on the Ticket, and persists a
 model reply before posting it and solving the Ticket. Retries are idempotent.
-Escalations are durably parked for OTHRM-17 instead of being delivered as
-replies or ticket-routing actions.
+For an escalation, the worker durably records the public conversation through
+the triggering requester comment. The Local Ticket System then atomically adds
+the structured internal note, exact team assignment, deterministic escalation
+tags, `open` status, and one server-owned public acknowledgment. A stable
+Ticket-and-turn idempotency key makes crash retries return the same result
+without duplicating those effects.
 
 This channel is local and provider-limited. It does not call Zendesk or prove
 Zendesk behavior.

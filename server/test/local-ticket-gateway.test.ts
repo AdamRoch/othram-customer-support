@@ -64,6 +64,11 @@ describeWithDatabase('LocalTicketGateway', () => {
         IF NEW.body = '__cursor_first__' THEN
           PERFORM pg_advisory_xact_lock(99123, 1);
         END IF;
+        IF NEW.is_public
+          AND NEW.body = 'I''m sorry this needs specialist review. I''ve routed your request to the appropriate Othram team for review.'
+          AND EXISTS (SELECT 1 FROM local_tickets WHERE id = NEW.ticket_id AND subject = 'Force escalation failure') THEN
+          RAISE EXCEPTION 'forced escalation transaction failure';
+        END IF;
         RETURN NEW;
       END;
       $$;
@@ -249,5 +254,133 @@ describeWithDatabase('LocalTicketGateway', () => {
       status: 'closed',
       idempotencyKey: 'invalid-status'
     } as never)).rejects.toThrow('status must be open, pending, or solved.');
+  });
+
+  it('applies one complete local escalation, including a structured human handoff', async () => {
+    if (!database) throw new Error('TEST_DATABASE_URL was not configured.');
+    const gateway = new LocalTicketGateway(database.db);
+    const ticket = await createTicket('I dispute this charge.');
+    const context = (await gateway.getTicket(ticket.id))!.comments.map((comment) => ({
+      commentId: comment.id,
+      author: comment.author,
+      body: comment.body,
+      createdAt: comment.createdAt
+    }));
+    const input = {
+      idempotencyKey: `ticket:${ticket.id}:turn:turn-1:escalation`,
+      inboundCommentId: context.at(-1)!.commentId,
+      turnId: 'turn-1',
+      reason: 'BILLING_DISPUTE' as const,
+      summary: 'Customer disputes a charge.',
+      team: 'Billing' as const,
+      context
+    };
+
+    const [first, replay, concurrent] = await Promise.all([
+      gateway.applyEscalation(ticket.id, input),
+      gateway.applyEscalation(ticket.id, input),
+      new LocalTicketGateway(database.db).applyEscalation(ticket.id, input)
+    ]);
+    expect(replay).toEqual(first);
+    expect(concurrent).toEqual(first);
+    const escalated = await gateway.getTicket(ticket.id);
+    expect(escalated).toMatchObject({ status: 'open', team: 'Billing' });
+    expect(escalated?.tags).toEqual(expect.arrayContaining(['ai-escalated', 'ai-escalated:billing-dispute']));
+    const notes = escalated!.comments.filter((comment) => !comment.isPublic);
+    const acknowledgments = escalated!.comments.filter((comment) => comment.isPublic && comment.author === 'agent');
+    expect(notes).toHaveLength(1);
+    expect(JSON.parse(notes[0]!.body)).toMatchObject({
+      type: 'ai_escalation', inboundCommentId: context.at(-1)!.commentId, turnId: 'turn-1', reason: 'BILLING_DISPUTE',
+      summary: 'Customer disputes a charge.', team: 'Billing', conversation: context
+    });
+    expect(acknowledgments).toEqual([expect.objectContaining({
+      body: "I'm sorry this needs specialist review. I've routed your request to the appropriate Othram team for review."
+    })]);
+  });
+
+  it('rolls an escalation back completely when its acknowledgement write fails', async () => {
+    if (!database) throw new Error('TEST_DATABASE_URL was not configured.');
+    const gateway = new LocalTicketGateway(database.db);
+    const ticket = await gateway.createTicket({
+      requester: { name: 'Jordan Lee', email: 'failure@othram-demo.test' },
+      subject: 'Force escalation failure',
+      message: 'I need a person.'
+    });
+    const context = ticket.comments.map((comment) => ({
+      commentId: comment.id, author: comment.author, body: comment.body, createdAt: comment.createdAt
+    }));
+    await expect(gateway.applyEscalation(ticket.id, {
+      idempotencyKey: 'forced-failure', inboundCommentId: context.at(-1)!.commentId,
+      turnId: 'turn-failure', reason: 'CUSTOMER_REQUESTS_HUMAN',
+      summary: 'Customer asked for a person.', team: 'General Support', context
+    })).rejects.toThrow('Failed query');
+
+    const after = await gateway.getTicket(ticket.id);
+    expect(after).toMatchObject({ status: 'open', team: null, tags: [] });
+    expect(after?.comments).toHaveLength(1);
+    expect(await database.db.select().from(localTicketIdempotency)
+      .where(sql`${localTicketIdempotency.ticketId} = ${ticket.id}`)).toHaveLength(0);
+  });
+
+  it('rejects context that does not exactly match the durable public prefix through the source inbound', async () => {
+    if (!database) throw new Error('TEST_DATABASE_URL was not configured.');
+    const gateway = new LocalTicketGateway(database.db);
+    const ticket = await createTicket('Initial public message.');
+    await gateway.addPublicReply(ticket.id, { message: 'Earlier public reply.', idempotencyKey: 'prefix-public' });
+    await gateway.addInternalNote(ticket.id, { message: 'Internal staff-only detail.', idempotencyKey: 'prefix-internal' });
+    const inbound = await gateway.addRequesterComment(ticket.id, {
+      message: 'Please escalate this request.', idempotencyKey: 'prefix-inbound'
+    });
+    const future = await gateway.addRequesterComment(ticket.id, {
+      message: 'This is a later requester update.', idempotencyKey: 'prefix-future'
+    });
+    const otherTicket = await gateway.createTicket({
+      requester: { name: 'Casey Smith', email: 'casey@othram-demo.test' },
+      subject: 'Other ticket', message: 'Other ticket request.'
+    });
+    const thread = (await gateway.getTicket(ticket.id))!;
+    const canonical = thread.comments
+      .slice(0, thread.comments.findIndex((comment) => comment.id === inbound.comment.id) + 1)
+      .filter((comment) => comment.isPublic)
+      .map((comment) => ({
+        commentId: comment.id, author: comment.author, body: comment.body, createdAt: comment.createdAt
+      }));
+    const internal = thread.comments.find((comment) => !comment.isPublic)!;
+    const futureComment = thread.comments.find((comment) => comment.id === future.comment.id)!;
+    const otherComment = otherTicket.comments[0]!;
+    const base = {
+      turnId: 'turn-verified-context', reason: 'CUSTOMER_REQUESTS_HUMAN' as const,
+      summary: 'Customer asked for a person.', team: 'General Support' as const
+    };
+    const invalidInputs = [
+      { inboundCommentId: inbound.comment.id, context: [...canonical, {
+        commentId: internal.id, author: internal.author, body: internal.body, createdAt: internal.createdAt
+      }] },
+      { inboundCommentId: inbound.comment.id, context: [...canonical, {
+        commentId: futureComment.id, author: futureComment.author, body: futureComment.body, createdAt: futureComment.createdAt
+      }] },
+      { inboundCommentId: otherComment.id, context: [{
+        commentId: otherComment.id, author: otherComment.author, body: otherComment.body, createdAt: otherComment.createdAt
+      }] },
+      { inboundCommentId: inbound.comment.id, context: [...canonical].reverse() },
+      { inboundCommentId: inbound.comment.id, context: canonical.map((message, index) =>
+        index === 0 ? { ...message, body: 'Altered body.' } : message) },
+      { inboundCommentId: inbound.comment.id, context: canonical.map((message, index) =>
+        index === 0 ? { ...message, createdAt: '2000-01-01T00:00:00.000Z' } : message) }
+    ];
+
+    for (const [index, invalid] of invalidInputs.entries()) {
+      await expect(gateway.applyEscalation(ticket.id, {
+        ...base,
+        ...invalid,
+        idempotencyKey: `malicious-context-${index}`
+      })).rejects.toThrow(/Escalation (context|inbound comment)/);
+    }
+
+    const after = await gateway.getTicket(ticket.id);
+    expect(after).toMatchObject({ status: 'open', team: null, tags: [] });
+    expect(after?.comments).toHaveLength(5);
+    expect(await database.db.select().from(localTicketIdempotency)
+      .where(sql`${localTicketIdempotency.ticketId} = ${ticket.id}`)).toHaveLength(4);
   });
 });

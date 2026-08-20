@@ -42,7 +42,7 @@ resolved without escalation.
 - Simulated Case System (local, seeded, behind an interface)
 - Browser voice channel with Emotional Delivery
 - Knowledge base with grounded (cited) answers
-- Durable escalation decisions parked for the OTHRM-17 delivery workflow
+- Atomic, crash-safe Local Ticket System escalation execution
 - In-repo eval scenario runner with scoreboard
 - Voice demo page + operator console
 
@@ -132,8 +132,9 @@ pnpm workspaces.
 - Weights each retry attempt as 100 queue slots so a poison item cannot
   monopolize the queue and sustained fresh traffic cannot starve retryable
   work. Work on the same Ticket remains ordered.
-- Persists escalations as pending work for OTHRM-17; this channel does not yet
-  deliver the acknowledgment, internal note, tags, assignment, or open status.
+- Persists the escalation decision and public context through the triggering
+  requester comment before execution. The verified-context, atomic handoff,
+  retry, and terminal-state contract is specified in §6.4.
 
 ### 5.3 Voice channel adapter (`server/src/channels/voice/`)
 
@@ -226,12 +227,16 @@ confidence (below a single tunable threshold — the "escalation balance" dial).
 
 ### 6.4 Escalation mechanics
 
-The polling channel durably parks `escalate(reason, summary, team)` output as
-pending work and sends no public reply. OTHRM-17 owns delivery of the internal
-note and context, exact team assignment (`Technical Team` / `Billing` /
-`General Support`), `ai-escalated` and reason tags, `open` status, and polite
-Customer acknowledgment. The parked event remains auditable for the
-human-avoidance metric.
+The polling channel first durably parks `escalate(reason, summary, team)` with
+the turn identity and public Ticket context through the triggering requester
+comment. The Local Ticket System verifies that context against its database,
+then atomically writes a versioned structured internal note, assigns the exact
+team (`Technical Team` / `Billing` / `General Support`), adds `ai-escalated`
+and the normalized `ai-escalated:<reason>` tag, sets `open` status, and posts
+one server-owned Customer acknowledgment. The Ticket-and-turn idempotency key
+makes the handoff safe to retry after a crash; only a successful handoff moves
+the worker item to terminal `ESCALATED`. The durable event remains auditable
+for the human-avoidance metric.
 
 ## 7. Seed data
 
@@ -274,8 +279,8 @@ bar, mapping 1:1 to the brief's use cases and evaluation criteria.
 1. Case status ("sent it last Thursday") → resolved, computed timeline
 2. Photo permission request → resolved (policy: always yes, cited)
 3. Process question (evidence packaging) → resolved, KB-grounded
-4. DNA mismatch / reprocessing → escalation parked with Technical Team metadata
-5. Billing dispute → escalation parked with Billing metadata; billing question (invoice copy) → resolved
+4. DNA mismatch / reprocessing → atomic escalation to Technical Team
+5. Billing dispute → atomic escalation to Billing; billing question (invoice copy) → resolved
 6. Off-topic (grant proposal) → polite redirect, no escalation
 7. Unknown case number → honest not-found + specialist offer, no guess
 8. Angry email about a delay → empathetic escalation
@@ -298,8 +303,8 @@ joke scenarios on camera, emotion readout visible. No cloud deployment.
 
 ## 11. Delivery sequence and backlog
 
-**Active delivery:** OTHRM-17 consumes the parked escalation work through
-`TicketGateway`, then OTHRM-31 packages the completed local ticket workflow.
+**Delivery sequence:** OTHRM-17 adds durable escalation execution through
+`TicketGateway`; OTHRM-31 packages the completed local ticket workflow.
 
 **Post-demo backlog:**
 
