@@ -245,6 +245,9 @@ async function checkZendeskTicket(): Promise<CheckResult> {
       authorization: `Bearer ${accessToken}`,
       'content-type': 'application/json',
     };
+    const identity = await fetch(`https://${subdomain}.zendesk.com/api/v2/users/me.json`, { headers });
+    if (!identity.ok) throw new SmokeFailure(`Zendesk identity read returned HTTP ${identity.status}`);
+
     const created = await fetch(`https://${subdomain}.zendesk.com/api/v2/tickets.json`, {
       method: 'POST',
       headers,
@@ -268,7 +271,10 @@ async function checkZendeskTicket(): Promise<CheckResult> {
     accessToken = '';
   }
 
-  return { name: 'Zendesk authenticated ticket', detail: 'client-credentials token created one disposable trial ticket and read back the same ticket' };
+  return {
+    name: 'Zendesk authenticated ticket',
+    detail: 'client-credentials token completed a read-only identity check, then created and read back one disposable trial ticket',
+  };
 }
 
 async function main(): Promise<void> {
