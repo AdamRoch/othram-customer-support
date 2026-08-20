@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { and, asc, eq, gt, sql } from 'drizzle-orm';
+import { escalationReasons } from '@othram/shared';
 import type { createDatabase } from '../../db/client.js';
 import {
   localTicketComments,
@@ -9,6 +10,8 @@ import {
 } from '../../db/schema.js';
 import {
   type TicketComment,
+  type TicketEscalation,
+  type TicketEscalationResult,
   type TicketGateway,
   TicketGatewayIdempotencyConflictError,
   type TicketStatus,
@@ -297,6 +300,82 @@ export class LocalTicketGateway implements TicketGateway {
         team: requireTeam(updated.team)!,
         status: requireStatus(updated.status)!,
         updatedAt: updated.updatedAt.toISOString()
+      };
+    });
+  }
+
+  async applyEscalation(ticketId: string, input: TicketEscalation): Promise<TicketEscalationResult> {
+    const turnId = requireText(input.turnId, 'turn id');
+    const summary = requireText(input.summary, 'escalation summary');
+    const team = requireTeam(input.team);
+    if (!team) throw new Error('escalation team is required.');
+    const reason = requireText(input.reason, 'escalation reason');
+    if (!escalationReasons.includes(reason as (typeof escalationReasons)[number])) {
+      throw new Error('escalation reason is unsupported.');
+    }
+    const context = input.context.map((message) => ({
+      commentId: requireText(message.commentId, 'escalation context comment id'),
+      author: message.author,
+      body: requireText(message.body, 'escalation context body'),
+      createdAt: requireText(message.createdAt, 'escalation context created at')
+    }));
+    if (context.some((message) => message.author !== 'requester' && message.author !== 'agent')) {
+      throw new Error('escalation context author must be requester or agent.');
+    }
+    const reasonTag = `ai-escalated:${reason.toLowerCase().replaceAll('_', '-')}`;
+    const internalNoteBody = JSON.stringify({
+      type: 'ai_escalation',
+      version: 1,
+      turnId,
+      reason,
+      summary,
+      team,
+      conversation: context
+    });
+    const acknowledgmentMessage =
+      "I'm sorry this needs specialist review. I've routed your request to the appropriate Othram team for review.";
+
+    return this.idempotent(ticketId, input.idempotencyKey, {
+      operation: 'apply_escalation', turnId, reason, summary, team, context
+    }, async (tx) => {
+      const [existing] = await tx.select().from(localTickets).where(eq(localTickets.id, ticketId));
+      if (!existing) throw new Error(`Local ticket ${ticketId} was not found.`);
+
+      await this.lockCommentSequence(tx);
+      const [internalNote] = await tx
+        .insert(localTicketComments)
+        .values({ ticketId, author: 'agent', isPublic: false, body: internalNoteBody })
+        .returning();
+      if (!internalNote) throw new Error('Could not create local escalation internal note.');
+
+      const [updated] = await tx
+        .update(localTickets)
+        .set({
+          tags: [...new Set([...existing.tags, 'ai-escalated', reasonTag])],
+          team,
+          status: 'open',
+          updatedAt: new Date()
+        })
+        .where(eq(localTickets.id, ticketId))
+        .returning();
+      if (!updated) throw new Error(`Local ticket ${ticketId} was not found.`);
+
+      const [acknowledgment] = await tx
+        .insert(localTicketComments)
+        .values({ ticketId, author: 'agent', isPublic: true, body: acknowledgmentMessage })
+        .returning();
+      if (!acknowledgment) throw new Error('Could not create local escalation acknowledgment.');
+
+      return {
+        internalNote: toTicketComment(internalNote),
+        ticket: {
+          id: updated.id,
+          tags: updated.tags,
+          team: requireTeam(updated.team)!,
+          status: requireStatus(updated.status)!,
+          updatedAt: updated.updatedAt.toISOString()
+        },
+        acknowledgment: toTicketComment(acknowledgment)
       };
     });
   }

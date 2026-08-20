@@ -1,3 +1,5 @@
+import type { EscalationReason } from '@othram/shared';
+
 export type TicketStatus = 'open' | 'pending' | 'solved';
 export type TicketTeam = 'Technical Team' | 'Billing' | 'General Support';
 
@@ -37,6 +39,32 @@ export interface TicketActionOptions {
   idempotencyKey: string;
 }
 
+/**
+ * The durable, human-readable context captured at the point the Agent Core
+ * decided to escalate. This deliberately contains only public ticket history
+ * through the inbound requester comment, never later or internal comments.
+ */
+export interface TicketEscalationContextMessage {
+  commentId: string;
+  author: 'requester' | 'agent';
+  body: string;
+  createdAt: string;
+}
+
+export interface TicketEscalation extends TicketActionOptions {
+  turnId: string;
+  reason: EscalationReason;
+  summary: string;
+  team: TicketTeam;
+  context: TicketEscalationContextMessage[];
+}
+
+export interface TicketEscalationResult {
+  internalNote: TicketComment;
+  ticket: Pick<TicketThread, 'id' | 'tags' | 'team' | 'status' | 'updatedAt'>;
+  acknowledgment: TicketComment;
+}
+
 export interface TicketGateway {
   /**
    * `nextCursor` is the durable checkpoint after every returned update. It may
@@ -68,6 +96,8 @@ export interface TicketGateway {
     ticketId: string,
     input: { addTags?: string[]; team?: TicketTeam | null; status?: TicketStatus } & TicketActionOptions
   ): Promise<Pick<TicketThread, 'id' | 'tags' | 'team' | 'status' | 'updatedAt'>>;
+  /** Applies every customer-visible and human-routing escalation effect atomically. */
+  applyEscalation(ticketId: string, input: TicketEscalation): Promise<TicketEscalationResult>;
 }
 
 export class TicketGatewayIdempotencyConflictError extends Error {
