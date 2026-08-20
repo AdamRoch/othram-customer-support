@@ -45,6 +45,8 @@ export interface RunLocalTicketEvalOptions {
   database: Database;
   /** Test seam used to prove fixture cleanup when an eval run fails. */
   failAfterScenario?: 'case_status' | 'photo_permission' | 'dna_reprocessing';
+  /** Test seam used to prove cleanup begins before eval initialization. */
+  failAfterCaseSeed?: boolean;
 }
 
 const EVAL_NOW = new Date('2026-08-17T12:00:00.000Z');
@@ -231,7 +233,6 @@ async function cleanupEvalCase(database: Database, caseNumber: string, caseEmail
 }
 
 async function cleanupEvalTickets(database: Database, ticketIds: string[], cursorName: string): Promise<void> {
-  if (ticketIds.length === 0) return;
   await database.transaction(async (tx) => {
     for (const ticketId of ticketIds) {
       await tx.delete(ticketWorkItems).where(eq(ticketWorkItems.ticketId, ticketId));
@@ -247,36 +248,44 @@ export async function runLocalTicketEval(options: RunLocalTicketEvalOptions): Pr
   const runId = randomUUID();
   const caseNumber = `OTHRM-EVAL-${runId.toUpperCase()}`;
   const caseEmail = `eval.case+${runId}@othram-demo.test`;
-  await seedEvalCase(options.database, caseNumber, caseEmail);
-  const knowledgeSearch = await createEvalKnowledgeSearch();
   const cursorName = `local-ticket-eval:${randomUUID()}`;
-  const gateway = new EvalOnlyTicketGateway(new LocalTicketGateway(options.database));
   const ticketIds: string[] = [];
-  const worker = new TicketPollingWorker({
-    database: options.database,
-    gateway,
-    cursorName,
-    now: () => EVAL_NOW,
-    createId: randomUUID,
-    createAgentCore: createTicketAgentCoreFactory({
-      model: new EvalModel(caseNumber),
-      lookupCase: createLookupCaseTool({ repository: createCaseTimelineRepository(options.database), now: () => EVAL_NOW }),
-      knowledgeSearch,
-      knowledgeGroundingClassifier: evalGroundingClassifier
-    })
-  });
-  const scenarios: LocalTicketEvalScenarioResult[] = [];
+  let seeded = false;
 
   try {
+    await seedEvalCase(options.database, caseNumber, caseEmail);
+    seeded = true;
+    if (options.failAfterCaseSeed) throw new Error('Injected eval failure after case seed.');
+    const knowledgeSearch = await createEvalKnowledgeSearch();
+    const gateway = new EvalOnlyTicketGateway(new LocalTicketGateway(options.database));
+    const worker = new TicketPollingWorker({
+      database: options.database,
+      gateway,
+      cursorName,
+      now: () => EVAL_NOW,
+      createId: randomUUID,
+      createAgentCore: createTicketAgentCoreFactory({
+        model: new EvalModel(caseNumber),
+        lookupCase: createLookupCaseTool({ repository: createCaseTimelineRepository(options.database), now: () => EVAL_NOW }),
+        knowledgeSearch,
+        knowledgeGroundingClassifier: evalGroundingClassifier
+      })
+    });
+    const scenarios: LocalTicketEvalScenarioResult[] = [];
+
     const statusTicket = await gateway.createTicket({ requester: { name: 'Eval Case Requester', email: caseEmail }, subject: 'Eval case status', message: `What is the status of ${caseNumber}?` });
     ticketIds.push(statusTicket.id);
     await worker.drain();
     const statusThread = await gateway.getTicket(statusTicket.id);
     const statusReplies = statusThread?.comments.filter((comment) => comment.author === 'agent' && comment.isPublic) ?? [];
+    await worker.drain();
+    const statusAfterRedrain = await gateway.getTicket(statusTicket.id);
+    const statusRepliesAfterRedrain = statusAfterRedrain?.comments.filter((comment) => comment.author === 'agent' && comment.isPublic) ?? [];
     const statusPassed = statusThread?.status === 'solved' && statusReplies.length === 1 &&
       statusReplies[0]?.body.includes(caseNumber) === true &&
       statusReplies[0]?.body.includes('currently in extraction') === true &&
-      statusReplies[0]?.body.includes('Based on the standard processing timeline') === true;
+      statusReplies[0]?.body.includes('Based on the standard processing timeline') === true &&
+      statusRepliesAfterRedrain.length === 1;
     scenarios.push({ name: 'case_status', passed: statusPassed, outcome: 'resolved' });
     if (options.failAfterScenario === 'case_status') throw new Error('Injected eval failure after case_status.');
 
@@ -285,7 +294,11 @@ export async function runLocalTicketEval(options: RunLocalTicketEvalOptions): Pr
     await worker.drain();
     const photoThread = await gateway.getTicket(photoTicket.id);
     const photoReplies = photoThread?.comments.filter((comment) => comment.author === 'agent' && comment.isPublic) ?? [];
-    const photoPassed = photoThread?.status === 'solved' && photoReplies.length === 1 && photoReplies[0]?.body.includes('[Media Permission Policy §Policy]') === true;
+    await worker.drain();
+    const photoAfterRedrain = await gateway.getTicket(photoTicket.id);
+    const photoRepliesAfterRedrain = photoAfterRedrain?.comments.filter((comment) => comment.author === 'agent' && comment.isPublic) ?? [];
+    const photoPassed = photoThread?.status === 'solved' && photoReplies.length === 1 &&
+      photoReplies[0]?.body.includes('[Media Permission Policy §Policy]') === true && photoRepliesAfterRedrain.length === 1;
     scenarios.push({ name: 'photo_permission', passed: photoPassed, outcome: 'resolved' });
     if (options.failAfterScenario === 'photo_permission') throw new Error('Injected eval failure after photo_permission.');
 
@@ -295,12 +308,16 @@ export async function runLocalTicketEval(options: RunLocalTicketEvalOptions): Pr
     const technicalThread = await gateway.getTicket(technicalTicket.id);
     const internalNotes = technicalThread?.comments.filter((comment) => comment.author === 'agent' && !comment.isPublic) ?? [];
     const acknowledgments = technicalThread?.comments.filter((comment) => comment.author === 'agent' && comment.isPublic) ?? [];
+    await worker.drain();
+    const technicalAfterRedrain = await gateway.getTicket(technicalTicket.id);
+    const acknowledgmentsAfterRedrain = technicalAfterRedrain?.comments.filter((comment) => comment.author === 'agent' && comment.isPublic) ?? [];
     const escalationNote = internalNotes.length === 1 ? JSON.parse(internalNotes[0]!.body) as Record<string, unknown> : undefined;
     const technicalPassed = technicalThread?.status === 'open' && technicalThread.team === 'Technical Team' &&
       technicalThread.tags.includes('ai-escalated') && technicalThread.tags.includes('ai-escalated:technical-problem') &&
       escalationNote?.reason === 'TECHNICAL_PROBLEM' && Array.isArray(escalationNote.conversation) &&
       acknowledgments.length === 1 && acknowledgments[0]?.body ===
-        "I'm sorry this needs specialist review. I've routed your request to the appropriate Othram team for review.";
+        "I'm sorry this needs specialist review. I've routed your request to the appropriate Othram team for review." &&
+      acknowledgmentsAfterRedrain.length === 1;
     scenarios.push({ name: 'dna_reprocessing', passed: technicalPassed, outcome: 'escalated' });
     if (options.failAfterScenario === 'dna_reprocessing') throw new Error('Injected eval failure after dna_reprocessing.');
 
@@ -308,7 +325,7 @@ export async function runLocalTicketEval(options: RunLocalTicketEvalOptions): Pr
     return evalResult(scenarios);
   } finally {
     await cleanupEvalTickets(options.database, ticketIds, cursorName);
-    await cleanupEvalCase(options.database, caseNumber, caseEmail);
+    if (seeded) await cleanupEvalCase(options.database, caseNumber, caseEmail);
   }
 }
 

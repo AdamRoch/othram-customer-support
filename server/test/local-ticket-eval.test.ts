@@ -73,6 +73,13 @@ describeWithDatabase('local ticket eval', () => {
     await expectNoEvalFixtures();
   });
 
+  it('cleans the case fixture when initialization fails after seeding', async () => {
+    if (!database) throw new Error('TEST_DATABASE_URL was not configured.');
+    await expect(runLocalTicketEval({ database: database.db, failAfterCaseSeed: true }))
+      .rejects.toThrow('Injected eval failure after case seed');
+    await expectNoEvalFixtures();
+  });
+
   it('does not reply to unrelated tickets even beyond one polling page', async () => {
     if (!database) throw new Error('TEST_DATABASE_URL was not configured.');
     const gateway = new LocalTicketGateway(database.db);
