@@ -1,9 +1,10 @@
 # Othram AI Support Agent
 
 Challenger-project demo for Othram: an AI support agent resolving tickets
-(through the provider-limited Local Ticket System) and browser voice conversations,
-escalating only when necessary. Spec: PRD.md. Domain glossary: CONTEXT.md. Decisions: docs/adr/.
-Real Zendesk integration is future administrator-owned work tracked by OTHRM-29.
+through the provider-limited Local Ticket System and escalating only when
+necessary. Browser voice is deferred target scope. Spec: PRD.md. Domain
+glossary: CONTEXT.md. Decisions: docs/adr/. Real Zendesk integration is future
+administrator-owned work tracked by OTHRM-29.
 
 ## Agent skills
 
