@@ -2,6 +2,9 @@
 
 Status: Superseded for the provider-limited delivery by ADR 0008
 
+This is historical decision context, not a statement of current capability.
+The Zendesk and voice claims below must not be reused for the current delivery.
+
 ## Context
 
 The approved full-product PRD adds a browser voice channel, Emotional Delivery,

@@ -1,13 +1,28 @@
-# Monorepo layout, local-only delivery
+# Monorepo layout and provider-limited local delivery
 
-Status: Accepted; the Zendesk provisioning requirement is superseded for the
-provider-limited delivery by ADR 0008
+Status: Accepted; Zendesk provisioning is superseded for this delivery by
+ADR 0008.
 
-The codebase is a pnpm-workspaces monorepo with three packages: `server/` (Fastify — Agent Core, Ticket and Voice channel adapters, Case System, KB retrieval, eval runner), `web/` (Vite/React — voice demo page and operator console), and `shared/` (types shared across the wire). Postgres + pgvector run in docker-compose; `pnpm seed` loads all seed data and `pnpm zendesk:setup` provisions groups/tags/macros in the trial Zendesk instance via API.
+The codebase is a pnpm-workspaces monorepo with three packages: `server/`
+(Fastify, Agent Core, Local Ticket System, simulated Case System, knowledge
+retrieval, and eval runner), `web/` (a minimal Vite/React health-page scaffold),
+and `shared/` (wire types). PostgreSQL with pgvector runs in Docker Compose.
 
-Delivery is the repo plus a filmed demo — **no cloud deployment**. A live deploy would require shipping Zendesk credentials and a tunnel for zero grading benefit; the film plus a reproducible local setup is the stronger deliverable.
+The accepted handoff is the repository and its reproducible provider-free local
+ticket evaluation. `pnpm eval` uses an explicit dedicated evaluation database,
+the deterministic evaluator model, versioned policy content, and the local
+ticket gateway. It does not provision or call Zendesk, OpenAI, or ElevenLabs.
+`pnpm seed` is a separate optional OpenAI-backed developer path for live chat
+and local worker experimentation. A Zendesk provisioning command is not
+present; that future administrator work remains OTHRM-29.
 
 ## Consequences
 
-- Everything a reviewer needs runs with `docker compose up`, `pnpm seed`, `pnpm dev`.
+- The accepted workflow is documented as `pnpm install`, named Compose startup,
+  migration of `EVAL_DATABASE_URL`, and `pnpm eval`; see the repository README.
+- The `EVAL_DATABASE_URL` and test database are intentionally distinct from the
+  normal development database, preventing evaluator fixtures from being
+  confused with other local work.
 - The `shared/` package is the single source of truth for conversation-event and tool-call types.
+- ADR 0008 remains the authority for the Zendesk HTTP 403 limitation and the
+  forbidden-claims boundary.

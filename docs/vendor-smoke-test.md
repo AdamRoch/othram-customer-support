@@ -1,5 +1,9 @@
 # Vendor smoke test (throwaway)
 
+This is a live feasibility spike, not runtime validation. It does not validate
+a browser voice channel or Zendesk integration. The accepted local ticket
+workflow is provider-free under [ADR 0008](adr/0008-local-ticket-system-fallback.md).
+
 `server/scripts/vendor-smoke.ts` is a one-off feasibility spike for OTHRM-10.
 It is not channel-adapter or production code. It runs four live vendor checks,
 prints only sanitized results, and removes its generated test audio when it

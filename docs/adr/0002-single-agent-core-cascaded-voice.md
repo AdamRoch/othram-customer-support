@@ -1,7 +1,8 @@
 # Single agent core, cascaded voice pipeline
 
-Status: Accepted; the Zendesk-specific ticket adapter is superseded for the
-provider-limited delivery by ADR 0008
+Status: Accepted architecture direction; the Zendesk-specific ticket adapter is
+superseded for the provider-limited delivery by ADR 0008. Voice implementation
+is deferred and is not part of the current Local Ticket System delivery.
 
 One Agent Core serves every channel. The Ticket channel (Zendesk API polling/webhooks) and the Voice Channel (browser audio over WebSocket) are thin I/O adapters; reasoning, tools, and escalation policy live in the shared core.
 
