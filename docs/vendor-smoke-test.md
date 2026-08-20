@@ -1,7 +1,7 @@
 # Vendor smoke test (throwaway)
 
 `server/scripts/vendor-smoke.ts` is a one-off feasibility spike for OTHRM-10.
-It is not channel-adapter or production code. It makes four live vendor calls,
+It is not channel-adapter or production code. It runs four live vendor checks,
 prints only sanitized results, and removes its generated test audio when it
 exits.
 
