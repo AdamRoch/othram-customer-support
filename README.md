@@ -90,6 +90,12 @@ to `.env` or export `DATABASE_URL` to use a different database. The server
 checks this connection during boot and exits with an actionable error if it is
 unavailable.
 
+`pnpm eval` is deliberately separate from the running Local Ticket System. Set
+`EVAL_DATABASE_URL` to a dedicated PostgreSQL database whose name contains
+`eval`, then apply migrations to that database with
+`DATABASE_URL="$EVAL_DATABASE_URL" pnpm db:migrate`. The evaluator refuses to
+fall back to `DATABASE_URL`, because its durable worker can claim global work.
+
 To confirm pgvector is enabled or reset the local database:
 
 ```sh

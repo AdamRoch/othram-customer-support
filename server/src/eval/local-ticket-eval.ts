@@ -14,6 +14,7 @@ import type {
 } from '../channels/ticket/gateway.js';
 import { TicketPollingWorker } from '../channels/ticket/polling-worker.js';
 import type { createDatabase } from '../db/client.js';
+import { stageDurationSeedData } from '../db/seed-data.js';
 import {
   cases,
   customers,
@@ -48,6 +49,8 @@ export interface RunLocalTicketEvalOptions {
   failAfterScenario?: 'case_status' | 'photo_permission' | 'dna_reprocessing';
   /** Test seam used to prove cleanup begins before eval initialization. */
   failAfterCaseSeed?: boolean;
+  /** Test seam used to verify durable work cleanup for exactly the fixture tickets created by this run. */
+  onFixtureTicketCreated?: (ticketId: string) => void;
 }
 
 const EVAL_NOW = new Date('2026-08-17T12:00:00.000Z');
@@ -136,9 +139,8 @@ function evalResult(scenarios: LocalTicketEvalScenarioResult[]): LocalTicketEval
 }
 
 /**
- * The evaluator is a tenant of the Local Ticket System, not its owner. This
- * adapter makes the worker unable to see or mutate tickets the eval did not
- * create, even when DATABASE_URL points at a developer's active local DB.
+ * This limits gateway IO to fixture tickets. It does not scope the worker's
+ * global durable-work claim query, so the CLI must use a dedicated eval DB.
  */
 class EvalOnlyTicketGateway implements TicketGateway {
   private readonly allowedTicketIds = new Set<string>();
@@ -213,17 +215,26 @@ async function seedEvalCase(database: Database, caseNumber: string, caseEmail: s
       name: 'Eval Case Requester', email: caseEmail, phone: '+1-512-555-0199'
     }).returning({ id: customers.id }))[0]?.id;
     if (!customerId) throw new Error('Could not seed the local eval customer.');
-    await tx.insert(stageDurations).values([
-      { stage: 'RECEIVED', standardDays: 1 }, { stage: 'EXTRACTION', standardDays: 5 },
-      { stage: 'QUANTIFICATION', standardDays: 2 }, { stage: 'LIBRARY_PREP', standardDays: 6 },
-      { stage: 'SEQUENCING', standardDays: 3 }, { stage: 'BIOINFORMATICS', standardDays: 2 },
-      { stage: 'REVIEW', standardDays: 2 }, { stage: 'DELIVERED', standardDays: 0 }
-    ]).onConflictDoNothing();
     await tx.insert(cases).values({
       caseNumber, customerId, serviceType: 'Forensic DNA identification', currentStage: 'EXTRACTION',
       stageEnteredAt: new Date('2026-08-14T12:00:00.000Z'), submittedAt: new Date('2026-08-13T12:00:00.000Z'), delayed: false, notes: null
     }).onConflictDoNothing();
   });
+}
+
+async function requireCanonicalStageDurations(database: Database): Promise<void> {
+  const configured = new Map((await database.select({
+    stage: stageDurations.stage,
+    standardDays: stageDurations.standardDays
+  }).from(stageDurations)).map((duration) => [duration.stage, duration.standardDays]));
+  const invalid = stageDurationSeedData.filter((expected) => configured.get(expected.stage) !== expected.standardDays);
+  if (invalid.length > 0) {
+    throw new Error(
+      `Eval database is missing or has non-canonical stage durations for ${invalid
+        .map((expected) => `${expected.stage}=${expected.standardDays}`)
+        .join(', ')}. Run pnpm db:migrate against EVAL_DATABASE_URL.`
+    );
+  }
 }
 
 async function cleanupEvalCase(database: Database, caseNumber: string, caseEmail: string): Promise<void> {
@@ -260,6 +271,7 @@ export async function runLocalTicketEval(options: RunLocalTicketEvalOptions): Pr
   let seeded = false;
 
   try {
+    await requireCanonicalStageDurations(options.database);
     await seedEvalCase(options.database, caseNumber, caseEmail);
     seeded = true;
     if (options.failAfterCaseSeed) throw new Error('Injected eval failure after case seed.');
@@ -282,6 +294,7 @@ export async function runLocalTicketEval(options: RunLocalTicketEvalOptions): Pr
 
     const statusTicket = await gateway.createTicket({ requester: { name: 'Eval Case Requester', email: caseEmail }, subject: 'Eval case status', message: `What is the status of ${caseNumber}?` });
     ticketIds.push(statusTicket.id);
+    options.onFixtureTicketCreated?.(statusTicket.id);
     await worker.drain();
     const statusThread = await gateway.getTicket(statusTicket.id);
     const statusReplies = statusThread?.comments.filter((comment) => comment.author === 'agent' && comment.isPublic) ?? [];
@@ -298,6 +311,7 @@ export async function runLocalTicketEval(options: RunLocalTicketEvalOptions): Pr
 
     const photoTicket = await gateway.createTicket({ requester: { name: 'Eval Case Requester', email: caseEmail }, subject: 'Eval photo permission', message: 'May I publish an Othram photo?' });
     ticketIds.push(photoTicket.id);
+    options.onFixtureTicketCreated?.(photoTicket.id);
     await worker.drain();
     const photoThread = await gateway.getTicket(photoTicket.id);
     const photoReplies = photoThread?.comments.filter((comment) => comment.author === 'agent' && comment.isPublic) ?? [];
@@ -311,6 +325,7 @@ export async function runLocalTicketEval(options: RunLocalTicketEvalOptions): Pr
 
     const technicalTicket = await gateway.createTicket({ requester: { name: 'Eval Case Requester', email: caseEmail }, subject: 'Eval DNA reprocessing', message: 'My DNA result looks like a mismatch. Please reprocess it.' });
     ticketIds.push(technicalTicket.id);
+    options.onFixtureTicketCreated?.(technicalTicket.id);
     await worker.drain();
     const technicalThread = await gateway.getTicket(technicalTicket.id);
     const internalNotes = technicalThread?.comments.filter((comment) => comment.author === 'agent' && !comment.isPublic) ?? [];
