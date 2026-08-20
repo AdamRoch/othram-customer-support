@@ -139,8 +139,8 @@ function evalResult(scenarios: LocalTicketEvalScenarioResult[]): LocalTicketEval
 }
 
 /**
- * This limits gateway IO to fixture tickets. It does not scope the worker's
- * global durable-work claim query, so the CLI must use a dedicated eval DB.
+ * This limits gateway IO to fixture tickets and provides the worker's matching
+ * claim scope. The CLI still requires a dedicated eval DB as a second boundary.
  */
 class EvalOnlyTicketGateway implements TicketGateway {
   private readonly allowedTicketIds = new Set<string>();
@@ -200,6 +200,10 @@ class EvalOnlyTicketGateway implements TicketGateway {
     return this.delegate.applyEscalation(ticketId, input);
   }
 
+  claimTicketIds(): readonly string[] {
+    return [...this.allowedTicketIds];
+  }
+
   private requireAllowed(ticketId: string): void {
     if (!this.allowedTicketIds.has(ticketId)) throw new Error(`Eval cannot access non-owned ticket ${ticketId}.`);
   }
@@ -232,7 +236,7 @@ async function requireCanonicalStageDurations(database: Database): Promise<void>
     throw new Error(
       `Eval database is missing or has non-canonical stage durations for ${invalid
         .map((expected) => `${expected.stage}=${expected.standardDays}`)
-        .join(', ')}. Run pnpm db:migrate against EVAL_DATABASE_URL.`
+        .join(', ')}. Apply the stage-duration defaults migration or restore canonical values in EVAL_DATABASE_URL.`
     );
   }
 }
@@ -283,6 +287,7 @@ export async function runLocalTicketEval(options: RunLocalTicketEvalOptions): Pr
       cursorName,
       now: () => EVAL_NOW,
       createId: randomUUID,
+      claimTicketIds: () => gateway.claimTicketIds(),
       createAgentCore: createTicketAgentCoreFactory({
         model: new EvalModel(caseNumber),
         lookupCase: createLookupCaseTool({ repository: createCaseTimelineRepository(options.database), now: () => EVAL_NOW }),

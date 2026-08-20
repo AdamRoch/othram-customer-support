@@ -27,6 +27,7 @@ interface PreservedWork {
   ticketId: string;
   workItemId: string;
   requesterEmail: string;
+  row: typeof ticketWorkItems.$inferSelect;
 }
 
 describeWithDatabase('local ticket eval', () => {
@@ -40,12 +41,12 @@ describeWithDatabase('local ticket eval', () => {
   beforeEach(async () => {
     if (!database) return;
     await cleanupLeakedEvalFixtures();
-    await ensurePreservedTerminalWork();
+    await ensurePreservedPendingWork();
   });
 
   afterAll(async () => {
     if (!database) return;
-    await cleanupPreservedTerminalWork();
+    await cleanupPreservedPendingWork();
     await database.close();
   });
 
@@ -68,7 +69,7 @@ describeWithDatabase('local ticket eval', () => {
     await database.db.delete(customers).where(like(customers.email, evalRequesterPattern));
   }
 
-  async function ensurePreservedTerminalWork(): Promise<void> {
+  async function ensurePreservedPendingWork(): Promise<void> {
     if (!database) throw new Error('TEST_DATABASE_URL was not configured.');
     if (preserved) {
       const [existing] = await database.db.select({ id: ticketWorkItems.id })
@@ -87,15 +88,14 @@ describeWithDatabase('local ticket eval', () => {
       ticketId: ticket.id,
       inboundCommentId: inbound.id,
       inboundCursor: `preserved:${ticket.id}`,
-      status: 'REPLIED',
-      replyText: 'Already delivered before the eval.',
+      status: 'PENDING',
       replyIdempotencyKey: `preserved:${ticket.id}:reply`
-    }).returning({ id: ticketWorkItems.id });
-    if (!workItem) throw new Error('Could not create preserved terminal work.');
-    preserved = { ticketId: ticket.id, workItemId: workItem.id, requesterEmail: ticket.requester.email };
+    }).returning();
+    if (!workItem) throw new Error('Could not create preserved pending work.');
+    preserved = { ticketId: ticket.id, workItemId: workItem.id, requesterEmail: ticket.requester.email, row: workItem };
   }
 
-  async function cleanupPreservedTerminalWork(): Promise<void> {
+  async function cleanupPreservedPendingWork(): Promise<void> {
     if (!database || !preserved) return;
     await database.db.delete(ticketWorkItems).where(eq(ticketWorkItems.id, preserved.workItemId));
     await database.db.delete(localTicketIdempotency).where(eq(localTicketIdempotency.ticketId, preserved.ticketId));
@@ -127,7 +127,7 @@ describeWithDatabase('local ticket eval', () => {
 
     const [preservedWork] = await database.db.select().from(ticketWorkItems)
       .where(eq(ticketWorkItems.id, preserved.workItemId));
-    expect(preservedWork?.status).toBe('REPLIED');
+    expect(preservedWork).toEqual(preserved.row);
     const preservedThread = await new LocalTicketGateway(database.db).getTicket(preserved.ticketId);
     expect(preservedThread?.comments.filter((comment) => comment.author === 'agent')).toHaveLength(0);
   }
@@ -135,6 +135,17 @@ describeWithDatabase('local ticket eval', () => {
   function trackedEvalFixtureIds(): { ids: string[]; onFixtureTicketCreated: (ticketId: string) => void } {
     const ids: string[] = [];
     return { ids, onFixtureTicketCreated: (ticketId) => ids.push(ticketId) };
+  }
+
+  async function cleanupUnrelatedTickets(tickets: ReadonlyArray<{ id: string; requester: { email: string } }>): Promise<void> {
+    if (!database) throw new Error('TEST_DATABASE_URL was not configured.');
+    for (const ticket of tickets) {
+      await database.db.delete(ticketWorkItems).where(eq(ticketWorkItems.ticketId, ticket.id));
+      await database.db.delete(localTicketIdempotency).where(eq(localTicketIdempotency.ticketId, ticket.id));
+      await database.db.delete(localTicketComments).where(eq(localTicketComments.ticketId, ticket.id));
+      await database.db.delete(localTickets).where(eq(localTickets.id, ticket.id));
+      await database.db.delete(localTicketRequesters).where(eq(localTicketRequesters.email, ticket.requester.email));
+    }
   }
 
   it('is deterministic across runs and cleans only its fixtures', async () => {
@@ -162,6 +173,29 @@ describeWithDatabase('local ticket eval', () => {
     await expect(runLocalTicketEval({ database: database.db, failAfterScenario: 'photo_permission', ...fixtures }))
       .rejects.toThrow('Injected eval failure');
     await expectNoEvalFixtures(fixtures.ids);
+  });
+
+  it('finds owned intake after a full unrelated page without touching it', async () => {
+    if (!database) throw new Error('TEST_DATABASE_URL was not configured.');
+    const gateway = new LocalTicketGateway(database.db);
+    const unrelated = await Promise.all(Array.from({ length: 51 }, (_, index) => gateway.createTicket({
+      requester: { name: `Unrelated ${index}`, email: `unrelated-page-${index}@othram-demo.test` },
+      subject: `Unrelated intake ${index}`,
+      message: `Unrelated requester update ${index}`
+    })));
+    const fixtures = trackedEvalFixtureIds();
+    try {
+      await expect(runLocalTicketEval({ database: database.db, ...fixtures })).resolves.toMatchObject({
+        scenarios: expect.arrayContaining([expect.objectContaining({ name: 'dna_reprocessing', passed: true })])
+      });
+      for (const ticket of unrelated) {
+        const thread = await gateway.getTicket(ticket.id);
+        expect(thread?.comments.filter((comment) => comment.author === 'agent')).toHaveLength(0);
+      }
+      await expectNoEvalFixtures(fixtures.ids);
+    } finally {
+      await cleanupUnrelatedTickets(unrelated);
+    }
   });
 
   it('cleans the case fixture when initialization fails after seeding', async () => {

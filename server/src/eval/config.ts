@@ -1,7 +1,7 @@
 /**
- * Eval workers claim durable work directly, so they must never share a
- * database with a running Local Ticket System. The CLI owns this guard; test
- * callers inject their isolated database directly into the library.
+ * The dedicated database is the outer boundary around eval durable work and
+ * reference configuration. The CLI owns this guard; test callers inject their
+ * isolated database directly into the library.
  */
 export function requireEvalDatabaseUrl(value = process.env.EVAL_DATABASE_URL): string {
   if (!value?.trim()) {

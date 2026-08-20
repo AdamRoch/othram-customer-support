@@ -57,6 +57,11 @@ export interface TicketPollingWorkerOptions {
   leaseMs?: number;
   now?: () => Date;
   createId?: () => string;
+  /**
+   * Optional runtime claim boundary. When present, only these opaque ticket
+   * IDs may be leased; an empty scope intentionally claims no work.
+   */
+  claimTicketIds?: () => Iterable<string>;
   /** Test-only crash seam: runs after the durable gateway write, before REPLIED. */
   afterGatewayReply?: () => Promise<void> | void;
   /** Test-only pause seam: runs after READY_TO_SEND is durable, before delivery. */
@@ -393,14 +398,20 @@ export class TicketPollingWorker {
   }
 
   private async claimOne(): Promise<TicketWorkerItem | null> {
+    const claimTicketIds = this.claimTicketIds();
+    if (claimTicketIds !== undefined && claimTicketIds.length === 0) return null;
     const leaseToken = this.createId();
     const now = this.now();
     const leaseExpiresAt = new Date(now.getTime() + this.leaseMs);
+    const claimScope = claimTicketIds === undefined
+      ? sql``
+      : sql`AND ticket_id IN (${sql.join(claimTicketIds.map((ticketId) => sql`${ticketId}`), sql`, `)})`;
     const result = await this.options.database.execute(sql`
       WITH candidate AS (
         SELECT id FROM ticket_work_items
         WHERE (status IN ('PENDING', 'ESCALATION_PENDING')
           OR (status IN ('LEASED', 'READY_TO_SEND') AND lease_expires_at < ${now}))
+          ${claimScope}
           AND NOT EXISTS (
             SELECT 1 FROM ticket_work_items AS earlier
             WHERE earlier.ticket_id = ticket_work_items.ticket_id
@@ -429,6 +440,18 @@ export class TicketPollingWorker {
     `);
     const row = result.rows[0] as Record<string, unknown> | undefined;
     return row ? asWorkItem(row) : null;
+  }
+
+  private claimTicketIds(): string[] | undefined {
+    if (!this.options.claimTicketIds) return undefined;
+    const unique = new Set<string>();
+    for (const ticketId of this.options.claimTicketIds()) {
+      if (typeof ticketId !== 'string' || !ticketId.trim()) {
+        throw new Error('Ticket claim scope must contain only non-blank ticket IDs.');
+      }
+      unique.add(ticketId);
+    }
+    return [...unique];
   }
 
   private async persistReply(item: TicketWorkerItem, reply: string): Promise<void> {

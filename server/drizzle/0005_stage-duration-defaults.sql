@@ -7,4 +7,5 @@ INSERT INTO "stage_durations" ("stage", "standard_days") VALUES
   ('BIOINFORMATICS', 2),
   ('REVIEW', 2),
   ('DELIVERED', 0)
-ON CONFLICT ("stage") DO NOTHING;
+ON CONFLICT ("stage") DO UPDATE
+SET "standard_days" = EXCLUDED."standard_days";

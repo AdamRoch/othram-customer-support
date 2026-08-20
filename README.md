@@ -94,7 +94,8 @@ unavailable.
 `EVAL_DATABASE_URL` to a dedicated PostgreSQL database whose name contains
 `eval`, then apply migrations to that database with
 `DATABASE_URL="$EVAL_DATABASE_URL" pnpm db:migrate`. The evaluator refuses to
-fall back to `DATABASE_URL`, because its durable worker can claim global work.
+fall back to `DATABASE_URL`; the dedicated database is the outer boundary for
+durable work and reference configuration.
 
 To confirm pgvector is enabled or reset the local database:
 
