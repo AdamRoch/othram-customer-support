@@ -1,6 +1,12 @@
 # Othram AI Support Agent
 
-An AI-powered customer support agent demo for Othram (forensic genomics), delivered as a challenger project. In the current provider-limited delivery, it answers customer inquiries through the Local Ticket System and a voice channel, resolving autonomously where possible and escalating to humans otherwise. Real Zendesk integration remains a future, unresolved provider integration.
+An AI-powered customer support agent demo for Othram (forensic genomics),
+delivered as a challenger project. **Current provider-limited delivery means
+only the durable PostgreSQL-backed Local Ticket System workflow and its local
+evaluation.** Browser voice, webhooks, Emotional Delivery, the operator
+console, response-time targets, and a filmed demo are future product scope,
+not current capability or proof. Real Zendesk integration remains a future,
+unresolved provider integration.
 
 ## Language
 
@@ -48,7 +54,9 @@ ticket operations are not part of this provider-limited delivery.
 _Avoid_: mock Zendesk, staging
 
 **Voice Channel**:
-A browser-based voice interface — a demo web page where the Customer speaks and hears the agent. Audio flows between browser and server directly; there is no telephony or phone number in this build.
+A target browser-based voice interface — a demo web page where the Customer
+speaks and hears the agent. It is deferred and not implemented in the current
+provider-limited delivery; there is no telephony or phone number in the target.
 _Avoid_: phone line, call, Twilio
 
 **Agent Core**:
@@ -56,7 +64,10 @@ The single conversational brain that handles every inquiry regardless of channel
 _Avoid_: bot, assistant, pipeline
 
 **Emotional Delivery**:
-Modulation of the agent's spoken voice in response to the Customer's emotional state — e.g. quieter and calmer when the Customer is angry, a slight chuckle at a joke. Directed by the Agent Core annotating its own replies.
+Target modulation of the agent's spoken voice in response to the Customer's
+emotional state — e.g. quieter and calmer when the Customer is angry, a slight
+chuckle at a joke. It is deferred with the voice channel and has no current
+delivery proof.
 _Avoid_: sentiment analysis, TTS settings
 
 **Escalation**:

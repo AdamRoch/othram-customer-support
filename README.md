@@ -40,20 +40,44 @@ From a clean checkout:
 
 ```sh
 pnpm install --frozen-lockfile
-cp .env.example .env
 
-# Use a dedicated Compose project and port so this proof does not share a DB
-# with another checkout. The volume is named by this project only.
-COMPOSE_PROJECT_NAME=othram_eval_demo POSTGRES_PORT=55432 docker compose up -d --wait
+# Explicitly override any existing .env provider values. The accepted proof
+# must not call OpenAI, Zendesk, or ElevenLabs.
+export OPENAI_API_KEY= ELEVENLABS_API_KEY= ELEVENLABS_VOICE_ID=
+export ZENDESK_SUBDOMAIN= ZENDESK_CLIENT_ID= ZENDESK_CLIENT_SECRET=
 
-# Create the dedicated evaluator database once. Its name intentionally contains
-# "eval"; the evaluator refuses any other database name.
-COMPOSE_PROJECT_NAME=othram_eval_demo POSTGRES_PORT=55432 \
-  docker compose exec -T db createdb -U othram othram_eval
+# Generate an isolated Compose project and choose an unused local port once.
+# Keep these exports in this shell for every command below.
+export COMPOSE_PROJECT_NAME="othram_eval_${RANDOM}_${RANDOM}"
+export POSTGRES_PORT=55432
+while nc -z 127.0.0.1 "$POSTGRES_PORT" >/dev/null 2>&1; do
+  export POSTGRES_PORT=$((POSTGRES_PORT + 1))
+done
 
-export EVAL_DATABASE_URL=postgresql://othram:othram@127.0.0.1:55432/othram_eval
+export RUNTIME_DATABASE_URL="postgresql://othram:othram@127.0.0.1:${POSTGRES_PORT}/${COMPOSE_PROJECT_NAME}_runtime"
+export TEST_DATABASE_URL="postgresql://othram:othram@127.0.0.1:${POSTGRES_PORT}/${COMPOSE_PROJECT_NAME}_test"
+export EVAL_DATABASE_URL="postgresql://othram:othram@127.0.0.1:${POSTGRES_PORT}/${COMPOSE_PROJECT_NAME}_eval"
+
+docker compose -p "$COMPOSE_PROJECT_NAME" up -d --wait
+
+# Idempotently create exactly the three databases owned by this proof.
+ensure_database() {
+  docker compose -p "$COMPOSE_PROJECT_NAME" exec -T db \
+    psql -v ON_ERROR_STOP=1 -U othram -d postgres -v db_name="$1" <<'SQL'
+SELECT format('CREATE DATABASE %I', :'db_name')
+WHERE NOT EXISTS (SELECT 1 FROM pg_database WHERE datname = :'db_name')
+\gexec
+SQL
+}
+ensure_database "${COMPOSE_PROJECT_NAME}_runtime"
+ensure_database "${COMPOSE_PROJECT_NAME}_test"
+ensure_database "${COMPOSE_PROJECT_NAME}_eval"
+
+# Migration 0005 supplies canonical stage-duration reference data to each DB.
+DATABASE_URL="$RUNTIME_DATABASE_URL" pnpm db:migrate
+DATABASE_URL="$TEST_DATABASE_URL" pnpm db:migrate
 DATABASE_URL="$EVAL_DATABASE_URL" pnpm db:migrate
-pnpm eval
+EVAL_DATABASE_URL="$EVAL_DATABASE_URL" pnpm eval
 ```
 
 Expected scoreboard:
@@ -76,34 +100,47 @@ injects failures to verify that cleanup begins even if initialization fails.
 The evaluator uses a scripted model and a fixed local knowledge result, so it
 does not call either provider. It is evidence for this local workflow only.
 
-When you are finished with this isolated proof, remove only its named Compose
-project and volume:
+The script has created a runtime database too, so the server can be checked
+without an OpenAI key. In a second terminal using the same exports, run:
 
 ```sh
-COMPOSE_PROJECT_NAME=othram_eval_demo POSTGRES_PORT=55432 docker compose down -v
+OPENAI_API_KEY= ELEVENLABS_API_KEY= LOCAL_TICKET_POLLING_ENABLED=false \
+DATABASE_URL="$RUNTIME_DATABASE_URL" \
+pnpm --filter @othram/server dev
 ```
+
+Then, from the first terminal:
+
+```sh
+curl --fail http://127.0.0.1:3001/health
+```
+
+Stop the server with Ctrl-C. The server proof explicitly leaves polling off and
+therefore does not call OpenAI.
 
 ## Full local verification
 
-Use an isolated test database in the same Compose instance. The test suite
-rejects a URL whose database name does not contain `test`.
+Continue in the shell from the quick proof. The dedicated database names above
+already satisfy the evaluator `eval` and test-suite `test` isolation checks.
 
 ```sh
-COMPOSE_PROJECT_NAME=othram_eval_demo POSTGRES_PORT=55432 \
-  docker compose exec -T db createdb -U othram othram_test
-export TEST_DATABASE_URL=postgresql://othram:othram@127.0.0.1:55432/othram_test
-DATABASE_URL="$TEST_DATABASE_URL" pnpm db:migrate
-
-pnpm typecheck
-pnpm lint
-pnpm test
-pnpm build
-pnpm eval
+TEST_DATABASE_URL="$TEST_DATABASE_URL" EVAL_DATABASE_URL="$EVAL_DATABASE_URL" pnpm typecheck
+TEST_DATABASE_URL="$TEST_DATABASE_URL" EVAL_DATABASE_URL="$EVAL_DATABASE_URL" pnpm lint
+TEST_DATABASE_URL="$TEST_DATABASE_URL" EVAL_DATABASE_URL="$EVAL_DATABASE_URL" pnpm test
+TEST_DATABASE_URL="$TEST_DATABASE_URL" EVAL_DATABASE_URL="$EVAL_DATABASE_URL" pnpm build
+EVAL_DATABASE_URL="$EVAL_DATABASE_URL" pnpm eval
 ```
 
 The migration command is intentionally run once for each named database. It
 bootstraps the canonical stage-duration reference data required by the
 evaluator. No OpenAI embedding seed is needed for the accepted path.
+
+When you are finished, delete only this shell’s generated Compose project and
+volume:
+
+```sh
+docker compose -p "$COMPOSE_PROJECT_NAME" down -v --remove-orphans
+```
 
 ## Optional live OpenAI development path
 
@@ -139,11 +176,34 @@ knowledge embeddings. The worker polls immediately at startup and then every
 `LOCAL_TICKET_POLL_INTERVAL_MS` milliseconds (30 seconds by default). It stops
 cleanly on the first SIGINT/SIGTERM and force-exits on a second signal.
 
+Copy-paste invocation for that optional live polling path (replace the key and
+database URL; this is not part of `pnpm eval`):
+
+```sh
+OPENAI_API_KEY='<private-key>' \
+DATABASE_URL='postgresql://othram:othram@127.0.0.1:5432/othram' \
+LOCAL_TICKET_POLLING_ENABLED=true \
+LOCAL_TICKET_POLL_INTERVAL_MS=30000 \
+pnpm --filter @othram/server dev
+```
+
 The polling implementation keeps a durable opaque cursor, leases work per
 ticket, persists an agent reply before delivery, and uses idempotency keys for
 retries. For a terminal escalation it atomically writes the structured internal
 note, team assignment, tags, `open` status, and exactly one public
 acknowledgment. Those are Local Ticket System guarantees, not Zendesk results.
+
+The focused real-PostgreSQL tests behind the restart and retry claims can be
+run against the dedicated `TEST_DATABASE_URL` from the verification section:
+
+```sh
+TEST_DATABASE_URL="$TEST_DATABASE_URL" pnpm --filter @othram/server test -- \
+  -t 'persists a cursor and does not enqueue overlap again after restart'
+TEST_DATABASE_URL="$TEST_DATABASE_URL" pnpm --filter @othram/server test -- \
+  -t 'retries the delivery crash window with one public reply'
+TEST_DATABASE_URL="$TEST_DATABASE_URL" pnpm --filter @othram/server test -- \
+  -t 'captures only public context through the inbound message and retries an escalation crash without duplicates'
+```
 
 ## Data and limits
 

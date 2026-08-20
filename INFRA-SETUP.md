@@ -12,7 +12,10 @@ Referenced by the vendor smoke-test spike ticket and the channel tickets.
 
 ## Part 1 — Current provider-limited delivery
 
-### 1. OpenAI
+### 1. OpenAI (optional live development only)
+
+The accepted `pnpm eval` path needs no vendor credential. OpenAI is required
+only for `pnpm seed`, live `/api/chat`, or enabled Local Ticket System polling.
 
 - [ ] Create an account at platform.openai.com and set up billing
       (pay-as-you-go is fine).
@@ -20,7 +23,11 @@ Referenced by the vendor smoke-test spike ticket and the channel tickets.
 - [ ] Verify: `curl https://api.openai.com/v1/models -H "Authorization: Bearer $OPENAI_API_KEY"`
       returns a model list.
 
-### 2. ElevenLabs
+### 2. ElevenLabs (deferred voice feasibility)
+
+ElevenLabs is not required for the current Local Ticket System delivery or its
+evaluation. Keep these steps for the future voice target only; they do not
+prove a current browser voice channel or Emotional Delivery.
 
 - [ ] Create an account at elevenlabs.io. Check your plan covers **Scribe
       (realtime STT)** and the **v3 TTS model** — the voice channel and
@@ -94,18 +101,17 @@ response, or save the access token to disk.
 - [ ] Docker Desktop, running (`docker info` succeeds) — runs Postgres+pgvector
 - [ ] git (`git --version`)
 
-### 5. Hand over the secrets
+### 5. Hand over optional development secrets
 
-- [ ] Create `SECRETS.local.env` in this directory with the current vendor values:
+- [ ] Create `SECRETS.local.env` in this directory only when using the optional
+      live OpenAI development path:
 
 ```
 OPENAI_API_KEY=
-ELEVENLABS_API_KEY=
-ELEVENLABS_VOICE_ID=
 ```
 
-Agents wire these into the real `.env` (the scaffold ticket creates
-`.env.example`), keep this file out of git, and never hard-code values.
+Keep this file out of git and never hard-code values. ElevenLabs values belong
+to deferred voice work, not this current delivery.
 
 An administrator executing OTHRM-29 supplies the documented Zendesk values at
 that time. They are not current Local Ticket System configuration.
@@ -124,17 +130,18 @@ steps apply only after OTHRM-29 delivers and validates a real Zendesk adapter:
 
 ---
 
-## Part 3 — Demo day (yours, not the agents')
+## Part 3 — Current local workflow walkthrough
 
-- [ ] Run the film-day checklist from the delivery-package ticket (seed
-      verification, voice check, scenario rehearsal).
-- [ ] Record the filmed demo: your own voice on the voice page — angry-caller
-      and joke scenarios, with the emotion readout visible.
+- [ ] Follow the provider-free `EVAL_DATABASE_URL` setup and `pnpm eval`
+      commands in `README.md`.
+- [ ] Confirm the three local scenarios and deterministic scoreboard.
+- [ ] Treat voice, Emotional Delivery, webhook, operator-console, and filmed
+      demo work as deferred target scope, not current acceptance evidence.
 
 ## Budget awareness
 
-- OpenAI: embeddings are cents; the eval suite is the main token consumer —
-  modest at this scale.
-- ElevenLabs: STT minutes + TTS characters meter against plan credits; the
-  demo scenarios are short, but repeated eval/dev runs add up — watch usage.
+- OpenAI: optional seed embeddings and live development consume usage; the
+  accepted local eval makes no OpenAI calls.
+- ElevenLabs: future voice feasibility consumes STT/TTS usage; it is not part
+  of the current local ticket workflow.
 - Future Zendesk trial: administrator-owned cost and expiry management under OTHRM-29.
