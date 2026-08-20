@@ -38,7 +38,11 @@ function modelThatSearchesThenReplies(reply: string) {
               {
                 callId: 'reply-call',
                 name: 'reply',
-                arguments: JSON.stringify({ message: reply })
+                arguments: JSON.stringify({
+                  message: reply,
+                  confidence: 0.9,
+                  emotionalState: 'NEUTRAL'
+                })
               }
             ]
           };

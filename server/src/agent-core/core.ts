@@ -1,5 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import type { AgentEvent, ChatResponse } from '@othram/shared';
+import {
+  customerEmotionalStates,
+  escalationReasons,
+  type AgentEvent,
+  type ChatResponse,
+  type CustomerEmotionalState,
+  type EscalationReason,
+  type EscalationTeam
+} from '@othram/shared';
 import { AGENT_SYSTEM_PROMPT } from './prompt.js';
 
 export interface AgentMessage {
@@ -60,6 +68,25 @@ export interface AgentTool {
   execute(argumentsValue: unknown): Promise<AgentToolResult>;
 }
 
+export interface AgentCoreConfig {
+  confidenceThreshold: number;
+}
+
+const DEFAULT_CONFIG: AgentCoreConfig = { confidenceThreshold: 0.7 };
+
+interface ReplyArguments {
+  message: string;
+  confidence: number;
+  emotionalState: CustomerEmotionalState;
+}
+
+interface EscalationArguments {
+  reason: EscalationReason;
+  summary: string;
+  team: EscalationTeam;
+  emotionalState: CustomerEmotionalState;
+}
+
 export class ConversationNotFoundError extends Error {
   constructor(conversationId: string) {
     super(`Conversation ${conversationId} was not found.`);
@@ -74,6 +101,47 @@ function parseArguments(call: AgentToolCall): unknown {
   }
 }
 
+function isCustomerEmotionalState(value: unknown): value is CustomerEmotionalState {
+  return typeof value === 'string' && customerEmotionalStates.includes(value as CustomerEmotionalState);
+}
+
+function parseReplyArguments(value: unknown): ReplyArguments {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('The reply tool requires an object.');
+  }
+  const { message, confidence, emotionalState } = value as Record<string, unknown>;
+  if (typeof message !== 'string' || !message.trim()) {
+    throw new Error('The reply tool requires a non-empty message.');
+  }
+  if (typeof confidence !== 'number' || !Number.isFinite(confidence) || confidence < 0 || confidence > 1) {
+    throw new Error('The reply tool requires a confidence from 0 to 1.');
+  }
+  if (!isCustomerEmotionalState(emotionalState)) {
+    throw new Error('The reply tool requires a supported customer emotional state.');
+  }
+  return { message: message.trim(), confidence, emotionalState };
+}
+
+function parseEscalationArguments(value: unknown): EscalationArguments {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    throw new Error('The escalate tool requires an object.');
+  }
+  const { reason, summary, team, emotionalState } = value as Record<string, unknown>;
+  if (typeof reason !== 'string' || !escalationReasons.includes(reason as EscalationReason)) {
+    throw new Error('The escalate tool requires a supported reason.');
+  }
+  if (typeof summary !== 'string' || !summary.trim()) {
+    throw new Error('The escalate tool requires a non-empty summary.');
+  }
+  if (team !== 'Technical Team' && team !== 'Billing' && team !== 'General Support') {
+    throw new Error('The escalate tool requires a supported team.');
+  }
+  if (!isCustomerEmotionalState(emotionalState)) {
+    throw new Error('The escalate tool requires a supported customer emotional state.');
+  }
+  return { reason: reason as EscalationReason, summary: summary.trim(), team, emotionalState };
+}
+
 function createReplyTool(): AgentTool {
   return {
     definition: {
@@ -83,25 +151,17 @@ function createReplyTool(): AgentTool {
       parameters: {
         type: 'object',
         properties: {
-          message: { type: 'string', minLength: 1 }
+          message: { type: 'string', minLength: 1 },
+          confidence: { type: 'number', minimum: 0, maximum: 1 },
+          emotionalState: { type: 'string', enum: customerEmotionalStates }
         },
-        required: ['message'],
+        required: ['message', 'confidence', 'emotionalState'],
         additionalProperties: false
       },
       strict: true
     },
     async execute(argumentsValue) {
-      if (
-        typeof argumentsValue !== 'object' ||
-        argumentsValue === null ||
-        !('message' in argumentsValue) ||
-        typeof argumentsValue.message !== 'string' ||
-        !argumentsValue.message.trim()
-      ) {
-        throw new Error('The reply tool requires a non-empty message.');
-      }
-
-      const message = argumentsValue.message.trim();
+      const { message } = parseReplyArguments(argumentsValue);
       return { output: { accepted: true }, reply: message };
     }
   };
@@ -125,6 +185,32 @@ function assertReplyMeetsRequirements(
   }
 }
 
+function createEscalateTool(): AgentTool {
+  return {
+    definition: {
+      type: 'function',
+      name: 'escalate',
+      description: 'Escalate a Customer request that requires human judgment.',
+      parameters: {
+        type: 'object',
+        properties: {
+          reason: { type: 'string', enum: escalationReasons },
+          summary: { type: 'string', minLength: 1 },
+          team: { type: 'string', enum: ['Technical Team', 'Billing', 'General Support'] },
+          emotionalState: { type: 'string', enum: customerEmotionalStates }
+        },
+        required: ['reason', 'summary', 'team', 'emotionalState'],
+        additionalProperties: false
+      },
+      strict: true
+    },
+    async execute(argumentsValue) {
+      parseEscalationArguments(argumentsValue);
+      return { output: { recorded: true } };
+    }
+  };
+}
+
 export class AgentCore {
   private readonly conversations = new Map<string, AgentMessage[]>();
   private readonly conversationTails = new Map<string, Promise<void>>();
@@ -133,10 +219,18 @@ export class AgentCore {
   constructor(
     private readonly model: AgentModel,
     private readonly createId: () => string = randomUUID,
-    tools: AgentTool[] = []
+    tools: AgentTool[] = [],
+    private readonly config: AgentCoreConfig = DEFAULT_CONFIG
   ) {
+    if (
+      !Number.isFinite(config.confidenceThreshold) ||
+      config.confidenceThreshold < 0 ||
+      config.confidenceThreshold > 1
+    ) {
+      throw new Error('confidenceThreshold must be a finite number from 0 to 1.');
+    }
     this.tools = new Map(
-      [createReplyTool(), ...tools].map((tool) => [tool.definition.name, tool])
+      [createReplyTool(), createEscalateTool(), ...tools].map((tool) => [tool.definition.name, tool])
     );
   }
 
@@ -192,9 +286,13 @@ export class AgentCore {
       if (response.toolCalls.length === 0) {
         throw new Error('Agent Core requires a reply tool call before completing a turn.');
       }
+      if (response.toolCalls.filter((call) => call.name === 'reply' || call.name === 'escalate').length > 1) {
+        throw new Error('Agent Core accepts exactly one reply or escalation action per turn.');
+      }
 
       const nextOutputs: AgentToolOutput[] = [];
       let replyMessage: string | undefined;
+      let escalated = false;
       for (const call of response.toolCalls) {
         const tool = this.tools.get(call.name);
         if (!tool) {
@@ -212,7 +310,16 @@ export class AgentCore {
           arguments: argumentsValue
         });
 
+        const replyArguments = call.name === 'reply' ? parseReplyArguments(argumentsValue) : undefined;
+        const escalationArguments =
+          call.name === 'escalate' ? parseEscalationArguments(argumentsValue) : undefined;
         const result = await tool.execute(argumentsValue);
+        const automaticEscalationReason =
+          replyArguments?.emotionalState === 'FRUSTRATED'
+            ? 'CUSTOMER_FRUSTRATED'
+            : replyArguments !== undefined && replyArguments.confidence < this.config.confidenceThreshold
+              ? 'LOW_CONFIDENCE'
+              : undefined;
         events.push({
           type: 'tool_completed',
           conversationId: id,
@@ -220,37 +327,91 @@ export class AgentCore {
           sequence: events.length,
           callId: call.callId,
           toolName: call.name,
-          result: result.output
+          result: automaticEscalationReason
+            ? { accepted: false, reason: automaticEscalationReason }
+            : result.output
         });
 
         if (result.replyRequirement) {
           replyRequirements.push(result.replyRequirement);
         }
 
+        const emotionalState = replyArguments?.emotionalState ?? escalationArguments?.emotionalState;
+        if (replyArguments) {
+          events.push({
+            type: 'confidence_recorded',
+            conversationId: id,
+            turnId,
+            sequence: events.length,
+            confidence: replyArguments.confidence
+          });
+        }
+        if (emotionalState) {
+          events.push({
+            type: 'customer_emotion_recorded',
+            conversationId: id,
+            turnId,
+            sequence: events.length,
+            emotionalState
+          });
+        }
+
+        if (escalationArguments) {
+          if (escalated) throw new Error('Agent Core received multiple escalation tool calls in one turn.');
+          escalated = true;
+          events.push({
+            type: 'escalated',
+            conversationId: id,
+            turnId,
+            sequence: events.length,
+            reason: escalationArguments.reason,
+            summary: escalationArguments.summary,
+            team: escalationArguments.team
+          });
+        }
+
         if (result.reply) {
           if (replyMessage !== undefined) {
             throw new Error('Agent Core received multiple reply tool calls in one step.');
           }
-          replyMessage = result.reply;
-          events.push({
-            type: 'reply_created',
-            conversationId: id,
-            turnId,
-            sequence: events.length,
-            message: result.reply
-          });
+          if (automaticEscalationReason) {
+            escalated = true;
+            events.push({
+              type: 'escalated',
+              conversationId: id,
+              turnId,
+              sequence: events.length,
+              reason: automaticEscalationReason,
+              summary:
+                automaticEscalationReason === 'LOW_CONFIDENCE'
+                  ? 'Draft reply confidence was below the configured escalation threshold.'
+                  : 'Customer emotional state was frustrated.',
+              team: 'General Support'
+            });
+          } else {
+            replyMessage = result.reply;
+            events.push({
+              type: 'reply_created',
+              conversationId: id,
+              turnId,
+              sequence: events.length,
+              message: result.reply
+            });
+          }
         } else {
           nextOutputs.push({ callId: call.callId, output: JSON.stringify(result.output) });
         }
       }
 
-      if (replyMessage !== undefined) {
-        assertReplyMeetsRequirements(replyMessage, replyRequirements);
+      if (replyMessage !== undefined || escalated) {
+        if (replyMessage !== undefined) {
+          assertReplyMeetsRequirements(replyMessage, replyRequirements);
+        }
         this.conversations.set(id, [
           ...messages,
-          { role: 'assistant', content: replyMessage }
+          ...(replyMessage === undefined ? [] : [{ role: 'assistant' as const, content: replyMessage }])
         ]);
-        return { conversationId: id, reply: replyMessage, events };
+        return { conversationId: id, reply: replyMessage ?? null, events };
       }
 
       previousResponseId = response.responseId;
