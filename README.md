@@ -105,6 +105,10 @@ without an OpenAI key. In the **original shell** that owns the exports, run the
 server in the foreground (all provider variables are explicitly blank):
 
 ```sh
+if nc -z 127.0.0.1 3001 >/dev/null 2>&1; then
+  echo '127.0.0.1:3001 is already in use; stop that process first.' >&2
+  exit 1
+fi
 OPENAI_API_KEY= ELEVENLABS_API_KEY= ELEVENLABS_VOICE_ID= \
 ZENDESK_SUBDOMAIN= ZENDESK_CLIENT_ID= ZENDESK_CLIENT_SECRET= \
 LOCAL_TICKET_POLLING_ENABLED=false \
@@ -115,7 +119,8 @@ pnpm --filter @othram/server dev
 Then, from a second terminal, run only:
 
 ```sh
-curl --fail http://127.0.0.1:3001/health
+test "$(curl --fail --silent --show-error http://127.0.0.1:3001/health)" = \
+  '{"status":"ok","service":"othram-support-server"}'
 ```
 
 Return to the original shell and stop the server with Ctrl-C. The server proof
@@ -147,16 +152,21 @@ docker compose -p "$COMPOSE_PROJECT_NAME" down -v --remove-orphans
 
 ## Optional live OpenAI development path
 
-This is separate from the accepted provider-free proof. It requires a private
-`OPENAI_API_KEY` in `.env`; never commit it or enable shell tracing while
-loading it.
+This is separate from the accepted provider-free proof. Start it in a fresh
+shell after completing the scoped proof cleanup, so it cannot inherit the
+proof’s Compose or database exports. It requires a private `OPENAI_API_KEY` in
+`.env`; never commit it or enable shell tracing while loading it.
 
 ```sh
+# Make the normal development target explicit if this is not a fresh shell.
+unset COMPOSE_PROJECT_NAME POSTGRES_PORT RUNTIME_DATABASE_URL TEST_DATABASE_URL EVAL_DATABASE_URL
+export DATABASE_URL='postgresql://othram:othram@127.0.0.1:5432/othram'
+
 # Start a normal development database (not the eval or test database).
 docker compose up -d --wait
-pnpm db:migrate
-pnpm seed
-pnpm dev
+DATABASE_URL="$DATABASE_URL" pnpm db:migrate
+DATABASE_URL="$DATABASE_URL" pnpm seed
+DATABASE_URL="$DATABASE_URL" pnpm dev
 ```
 
 `pnpm seed` loads the fixed demo customers, cases, stage-duration defaults, and

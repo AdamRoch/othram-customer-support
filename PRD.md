@@ -275,7 +275,7 @@ for the human-avoidance metric.
 ```
 /
 ├── server/          # Fastify: agent core, channel adapters, case system, KB, eval
-├── web/             # Vite/React: voice page + operator console
+├── web/             # Vite/React health-page scaffold; voice/operator console deferred
 ├── shared/          # shared types (events, tool calls)
 ├── docker-compose.yml  # Postgres + pgvector
 ├── CONTEXT.md       # domain glossary
